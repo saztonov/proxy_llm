@@ -1,0 +1,37 @@
+{
+  "name": "proxy_llm",
+  "version": "0.1.0",
+  "description": "OpenAI-compatible proxy between PassDesk and OpenRouter with metadata journal, alerts, and dashboard",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0 <23"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "migrate": "node dist/storage/migrate.js"
+  },
+  "dependencies": {
+    "@fastify/basic-auth": "^6.1.0",
+    "@fastify/rate-limit": "^10.2.1",
+    "better-sqlite3": "^11.6.0",
+    "eta": "^3.5.0",
+    "fastify": "^5.2.0",
+    "p-queue": "^8.0.1",
+    "pino": "^9.5.0",
+    "undici": "^7.2.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

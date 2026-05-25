@@ -141,3 +141,10 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# proxy_llm runtime
+*.db
+*.db-wal
+*.db-shm
+data/
+.idea/

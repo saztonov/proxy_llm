@@ -1,0 +1,55 @@
+[Unit]
+Description=PassDesk OCR Proxy (proxy_llm)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=proxy_llm
+Group=proxy_llm
+WorkingDirectory=/opt/proxy_llm
+EnvironmentFile=/etc/proxy_llm/.env
+ExecStart=/usr/bin/node dist/server.js
+Restart=on-failure
+RestartSec=5s
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=90s
+
+# === Ресурсные лимиты ===
+MemoryMax=1G
+MemoryHigh=768M
+CPUQuota=80%
+TasksMax=200
+LimitNOFILE=4096
+IOWeight=50
+Nice=10
+
+# === Sandboxing (MVP-safe) ===
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/proxy_llm
+
+# === ВНИМАНИЕ: НЕ включать в MVP ===
+# MemoryDenyWriteExecute=true     # ломает V8 JIT в Node.js (нужна RWX-память) — НЕ ВКЛЮЧАТЬ
+# SystemCallFilter=@system-service# может ломать нативные зависимости (better-sqlite3, undici)
+# SystemCallFilter=~@privileged @resources
+# RestrictNamespaces=true         # некоторые Node-зависимости используют user namespaces
+# ProtectClock=true               # включить после Iteration 2 smoke-теста
+# ProtectHostname=true            # включить после Iteration 2 smoke-теста
+# ProtectKernelLogs=true          # включить после Iteration 2 smoke-теста
+
+[Install]
+WantedBy=multi-user.target

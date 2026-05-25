@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>proxy_llm — dashboard</title>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 24px; color: #222; }
+    h1 { margin-top: 0; }
+    .panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .card { padding: 12px 16px; border: 1px solid #ddd; border-radius: 8px; background: #fafafa; }
+    .card .label { font-size: 12px; text-transform: uppercase; color: #666; }
+    .card .value { font-size: 22px; margin-top: 4px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
+    th { background: #f5f5f5; font-weight: 600; }
+    .ok { color: #0a7d2c; }
+    .err { color: #b00020; }
+    .muted { color: #888; }
+    .meta { color: #666; font-size: 12px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>proxy_llm</h1>
+  <div class="meta">Сгенерировано: <%= it.generatedAt %> · Активных запросов: <%= it.activeCount %></div>
+
+  <div class="panel">
+    <div class="card">
+      <div class="label">За 24 часа</div>
+      <div class="value"><%= it.aggDay.total %></div>
+      <div class="muted">
+        ok: <%= it.aggDay.success %> · err: <%= it.aggDay.errors %>
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">За час</div>
+      <div class="value"><%= it.aggHour.total %></div>
+      <div class="muted">
+        ok: <%= it.aggHour.success %> · err: <%= it.aggHour.errors %>
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">Avg latency (24h)</div>
+      <div class="value"><%= it.aggDay.avg_latency_ms ? Math.round(it.aggDay.avg_latency_ms) + ' ms' : '—' %></div>
+    </div>
+    <div class="card">
+      <div class="label">p95 latency (24h)</div>
+      <div class="value"><%= it.p95Day !== null ? it.p95Day + ' ms' : '—' %></div>
+    </div>
+    <div class="card">
+      <div class="label">Tokens (24h)</div>
+      <div class="value"><%= it.aggDay.total_tokens || 0 %></div>
+    </div>
+  </div>
+
+  <h2>Последние 100 запросов</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>received</th>
+        <th>request_id</th>
+        <th>status</th>
+        <th>http</th>
+        <th>model</th>
+        <th>latency</th>
+        <th>tokens</th>
+        <th>upstream_id</th>
+        <th>error</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% it.recent.forEach(function(r){ %>
+      <tr>
+        <td><%= r.id %></td>
+        <td><%= it.formatTs(r.ts_received) %></td>
+        <td><code><%= r.request_id %></code></td>
+        <td class="<%= r.status === 'success' ? 'ok' : 'err' %>"><%= r.status %></td>
+        <td><%= r.http_status || '—' %></td>
+        <td><%= r.model_used || '—' %></td>
+        <td><%= r.latency_ms !== null ? r.latency_ms + ' ms' : '—' %></td>
+        <td><%= r.total_tokens || '—' %></td>
+        <td><code><%= r.upstream_id || '—' %></code></td>
+        <td class="muted"><%= r.error_code || '' %></td>
+      </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</body>
+</html>
