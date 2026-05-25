@@ -45,7 +45,8 @@ npm start           # node dist/server.js
 
 ### Развёртывание на VPS
 
-См. [deploy/INSTALL.md](deploy/INSTALL.md) — пошаговые команды для Ubuntu 22.04/24.04 с указанием пользователей (root vs proxy_llm).
+- **[docs/operator-guide.md](docs/operator-guide.md)** — полное руководство админа: подготовка VPS, развёртывание с нуля, генерация и передача токена в PassDesk, проверка end-to-end, эксплуатация, ротация секретов. Начинать с него.
+- [deploy/INSTALL.md](deploy/INSTALL.md) — более компактный справочник команд.
 
 ### Миграция PassDesk
 
