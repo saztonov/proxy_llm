@@ -58,6 +58,7 @@
       <tr>
         <th>#</th>
         <th>received</th>
+        <th>client</th>
         <th>request_id</th>
         <th>status</th>
         <th>http</th>
@@ -73,6 +74,7 @@
       <tr>
         <td><%= r.id %></td>
         <td><%= it.formatTs(r.ts_received) %></td>
+        <td><%= r.client_id || '—' %></td>
         <td><code><%= r.request_id %></code></td>
         <td class="<%= r.status === 'success' ? 'ok' : 'err' %>"><%= r.status %></td>
         <td><%= r.http_status || '—' %></td>

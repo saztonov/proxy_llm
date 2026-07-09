@@ -40,6 +40,24 @@ export interface DbHandle {
   close(): void;
 }
 
+/** true, если в таблице уже есть колонка. SQLite не умеет ADD COLUMN IF NOT EXISTS. */
+function hasColumn(db: Database.Database, table: string, column: string): boolean {
+  const rows = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
+  return rows.some((r) => r.name === column);
+}
+
+/**
+ * Аддитивные идемпотентные миграции поверх MIGRATION_001.
+ * Каждая — no-op на уже мигрированной БД, безопасна на каждом старте.
+ */
+function applyAdditiveMigrations(db: Database.Database): void {
+  // 002 — multi-tenant: колонка арендатора + индекс для пер-клиентских агрегатов.
+  if (!hasColumn(db, 'requests', 'client_id')) {
+    db.exec(`ALTER TABLE requests ADD COLUMN client_id TEXT`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_requests_client ON requests(client_id, ts_received)`);
+}
+
 export function openDb(dbPath: string): DbHandle {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
@@ -48,6 +66,7 @@ export function openDb(dbPath: string): DbHandle {
   db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
   db.exec(MIGRATION_001);
+  applyAdditiveMigrations(db);
 
   return {
     db,

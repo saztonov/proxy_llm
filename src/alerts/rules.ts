@@ -39,12 +39,14 @@ export interface ObservedEvent {
   httpStatus: number | null;
   latencyMs: number | null;
   errorCode: string | null;
+  clientId?: string | null;
 }
 
 export class AlertEngine {
   private readonly cooldown = new AlertCooldown(COOLDOWNS_MS);
-  private consecutiveErrors = 0;
-  private hadErrorsRecently = false;
+  // Пер-клиентские серии ошибок: единый счётчик размывался успехом другого арендатора.
+  private readonly streaks = new Map<string, number>();
+  private readonly hadErrors = new Map<string, boolean>();
 
   constructor(
     private readonly config: Config,
@@ -85,21 +87,27 @@ export class AlertEngine {
       );
     }
 
+    const cid = ev.clientId ?? 'default';
     if (isError) {
-      this.consecutiveErrors++;
-      this.hadErrorsRecently = true;
-      if (this.consecutiveErrors >= this.config.ALERT_ERROR_STREAK_THRESHOLD) {
+      const n = (this.streaks.get(cid) ?? 0) + 1;
+      this.streaks.set(cid, n);
+      this.hadErrors.set(cid, true);
+      if (n >= this.config.ALERT_ERROR_STREAK_THRESHOLD) {
         await this.fire(
           'error_streak',
-          `⚠️ Серия ошибок: ${this.consecutiveErrors} подряд. Последняя: ${ev.status} / ${ev.errorCode ?? '—'}`,
+          `⚠️ Серия ошибок (${cid}): ${n} подряд. Последняя: ${ev.status} / ${ev.errorCode ?? '—'}`,
+          `error_streak:${cid}`,
         );
       }
     } else {
-      if (this.hadErrorsRecently && this.consecutiveErrors >= this.config.ALERT_ERROR_STREAK_THRESHOLD) {
-        await this.fire('openrouter_recovered', '✅ Восстановление после серии ошибок.');
+      if (
+        (this.hadErrors.get(cid) ?? false) &&
+        (this.streaks.get(cid) ?? 0) >= this.config.ALERT_ERROR_STREAK_THRESHOLD
+      ) {
+        await this.fire('openrouter_recovered', `✅ ${cid}: восстановление после серии ошибок.`);
       }
-      this.consecutiveErrors = 0;
-      this.hadErrorsRecently = false;
+      this.streaks.set(cid, 0);
+      this.hadErrors.set(cid, false);
     }
 
     await this.checkErrorRate();
@@ -151,10 +159,12 @@ export class AlertEngine {
     }
   }
 
-  private async fire(kind: AlertKind, text: string): Promise<void> {
-    if (!this.cooldown.shouldSend(kind)) return;
-    this.cooldown.markSent(kind);
-    this.logger.info({ alert: kind }, 'alert fired');
+  private async fire(kind: AlertKind, text: string, instanceKey?: string): Promise<void> {
+    const now = Date.now();
+    const key = instanceKey ?? kind;
+    if (!this.cooldown.shouldSend(kind, now, key)) return;
+    this.cooldown.markSent(kind, now, key);
+    this.logger.info({ alert: kind, key }, 'alert fired');
     await this.telegram.send(text);
   }
 }

@@ -10,22 +10,19 @@ const DENY_FIELDS = [
   'debug',
 ] as const;
 
-export interface ModelConfig {
-  model: string;
-  fallbackModels: string[];
-}
+import type { ModelResolution } from './resolve-model.js';
 
 export function buildUpstreamPayload(
   incoming: Record<string, unknown>,
-  modelConfig: ModelConfig,
+  resolution: ModelResolution,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...incoming };
   for (const k of DENY_FIELDS) delete out[k];
 
-  if (modelConfig.fallbackModels.length > 0) {
-    out.models = [modelConfig.model, ...modelConfig.fallbackModels];
+  if (resolution.fallbackModels.length > 0) {
+    out.models = [resolution.model, ...resolution.fallbackModels];
   } else {
-    out.model = modelConfig.model;
+    out.model = resolution.model;
   }
   out.stream = false;
   return out;

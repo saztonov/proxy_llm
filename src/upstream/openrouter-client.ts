@@ -14,6 +14,7 @@ import {
 } from './read-body-with-limit.js';
 import { filterResponseHeaders, type FilteredHeaders } from './filter-response-headers.js';
 import { buildUpstreamPayload } from './sanitize-payload.js';
+import type { ModelResolution } from './resolve-model.js';
 import { sanitizeErrorForLog } from '../utils/sanitize-error.js';
 import type { Logger } from '../utils/logger.js';
 
@@ -37,6 +38,14 @@ export interface ExecuteOptions {
   incoming: Record<string, unknown>;
   requestId: string;
   deadline?: Deadline;
+  /** Эффективная модель (+fallback) для этого запроса; резолвится до вызова. */
+  modelResolution: ModelResolution;
+  /** Для логирования/атрибуции. */
+  clientId?: string;
+  /** Внешний abort (watchdog/graceful) — доводится до undici-запроса. */
+  signal?: AbortSignal;
+  /** Per-tenant ключ OpenRouter; иначе глобальный OPENROUTER_API_KEY. */
+  apiKey?: string;
 }
 
 export class OpenRouterClient {
@@ -54,10 +63,7 @@ export class OpenRouterClient {
       opts.deadline ??
       createDeadline(Date.now(), this.config.REQUEST_DEADLINE_MS, this.config.MIN_REMAINING_MS);
 
-    const upstreamPayload = buildUpstreamPayload(opts.incoming, {
-      model: this.config.OPENROUTER_MODEL,
-      fallbackModels: this.config.OPENROUTER_FALLBACK_MODELS,
-    });
+    const upstreamPayload = buildUpstreamPayload(opts.incoming, opts.modelResolution);
     const bodyJson = JSON.stringify(upstreamPayload);
 
     let lastResult: ProxyResult | null = null;
@@ -70,13 +76,15 @@ export class OpenRouterClient {
       const attemptTimeoutMs = deadline.attemptTimeout(this.config.UPSTREAM_ATTEMPT_TIMEOUT_MS);
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), attemptTimeoutMs).unref();
+      // Внешний abort (watchdog/graceful) объединяем с per-attempt timeout — оба доводятся до undici.
+      const signal = opts.signal ? AbortSignal.any([ac.signal, opts.signal]) : ac.signal;
 
       try {
         const res = await undiciRequest(this.endpoint, {
           method: 'POST',
-          headers: this.buildUpstreamHeaders(opts.requestId),
+          headers: this.buildUpstreamHeaders(opts.requestId, opts.apiKey),
           body: bodyJson,
-          signal: ac.signal,
+          signal,
         });
 
         const bodyText = await readBodyWithLimit(
@@ -93,6 +101,7 @@ export class OpenRouterClient {
           classification,
           opts.requestId,
           attempt,
+          opts.modelResolution,
         );
 
         if (classification.kind === 'success') {
@@ -136,9 +145,9 @@ export class OpenRouterClient {
     return lastResult ?? this.makeDeadlineExceeded(opts.requestId, this.config.UPSTREAM_MAX_ATTEMPTS);
   }
 
-  private buildUpstreamHeaders(requestId: string): Record<string, string> {
+  private buildUpstreamHeaders(requestId: string, apiKey?: string): Record<string, string> {
     const headers: Record<string, string> = {
-      'Authorization': `Bearer ${this.config.OPENROUTER_API_KEY}`,
+      'Authorization': `Bearer ${apiKey ?? this.config.OPENROUTER_API_KEY}`,
       'Content-Type': 'application/json',
       'X-Request-Id': requestId,
     };
@@ -161,6 +170,7 @@ export class OpenRouterClient {
     classification: Classification,
     requestId: string,
     attempt: number,
+    resolution: ModelResolution,
   ): ProxyResult {
     const parsedObj = (parsed && typeof parsed === 'object') ? (parsed as Record<string, unknown>) : null;
     const upstreamId = typeof parsedObj?.id === 'string' ? parsedObj.id : null;
@@ -174,7 +184,7 @@ export class OpenRouterClient {
       headers: filterResponseHeaders(upstreamHeaders, requestId, upstreamId),
       bodyText,
       classification: classification.kind,
-      fallbackUsed: this.computeFallbackUsed(modelUsed),
+      fallbackUsed: this.computeFallbackUsed(modelUsed, resolution),
       attemptCount: attempt,
     };
     if (usage) result.usage = usage;
@@ -234,10 +244,10 @@ export class OpenRouterClient {
     };
   }
 
-  private computeFallbackUsed(modelUsed: string | undefined): number | null {
+  private computeFallbackUsed(modelUsed: string | undefined, resolution: ModelResolution): number | null {
     if (!modelUsed) return null;
-    if (modelUsed === this.config.OPENROUTER_MODEL) return 0;
-    if (this.config.OPENROUTER_FALLBACK_MODELS.includes(modelUsed)) return 1;
+    if (modelUsed === resolution.model) return 0;
+    if (resolution.fallbackModels.includes(modelUsed)) return 1;
     return null;
   }
 

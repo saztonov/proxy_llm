@@ -1,11 +1,12 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import PQueue from 'p-queue';
 import type { Config } from './config.js';
 import { logger } from './utils/logger.js';
 import { openDb, type DbHandle } from './storage/db.js';
 import { RequestsRepo } from './storage/requests-repo.js';
 import { OpenRouterClient } from './upstream/openrouter-client.js';
 import { ActiveRequests } from './dedup/active-requests.js';
+import { loadClientRegistry, type ClientRegistry } from './clients/registry.js';
+import { FairnessManager } from './concurrency/fairness.js';
 import { TelegramSender } from './alerts/telegram.js';
 import { AlertEngine } from './alerts/rules.js';
 import { startDailyDigest } from './alerts/digest.js';
@@ -19,7 +20,8 @@ import { dirname } from 'node:path';
 export interface AppBundle {
   app: FastifyInstance;
   db: DbHandle;
-  queue: PQueue;
+  registry: ClientRegistry;
+  fairness: FairnessManager;
   active: ActiveRequests;
   activeMetrics: ActiveMetrics;
   alerts: AlertEngine;
@@ -32,8 +34,15 @@ export async function buildApp(config: Config): Promise<AppBundle> {
   const db = openDb(config.DB_PATH);
   const repo = new RequestsRepo(db.db);
 
-  const queue = new PQueue({ concurrency: config.QUEUE_CONCURRENCY });
+  const registry = loadClientRegistry(config);
   const active = new ActiveRequests(config.MAX_ACTIVE_DEDUP_KEYS);
+  const fairness = new FairnessManager(
+    registry,
+    config.QUEUE_CONCURRENCY,
+    config.QUEUE_MAX_PENDING,
+    () => active.size(),
+    config.MAX_ACTIVE_DEDUP_KEYS,
+  );
   const activeMetrics = new ActiveMetrics();
 
   const client = new OpenRouterClient(config, logger);
@@ -88,14 +97,15 @@ export async function buildApp(config: Config): Promise<AppBundle> {
   await registerChatRoutes(app, {
     config,
     logger,
+    registry,
+    fairness,
     active,
     client,
-    queue,
     repo,
     alerts,
     activeMetrics,
   });
   await registerDashboard(app, { config, repo, activeMetrics });
 
-  return { app, db, queue, active, activeMetrics, alerts, startupAlert, stopWatchdog, stopDigest };
+  return { app, db, registry, fairness, active, activeMetrics, alerts, startupAlert, stopWatchdog, stopDigest };
 }

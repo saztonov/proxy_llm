@@ -33,10 +33,20 @@ const schema = z.object({
   UPSTREAM_RESPONSE_BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(2_097_152),
 
   // Queue / Dedup
+  // QUEUE_CONCURRENCY — общий (global) потолок одновременных upstream-вызовов.
+  // QUEUE_MAX_PENDING — общий потолок admitted-запросов (память/back-pressure).
   QUEUE_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(1),
   QUEUE_MAX_PENDING: z.coerce.number().int().min(1).max(1000).default(10),
   MAX_ACTIVE_DEDUP_KEYS: z.coerce.number().int().min(1).max(100_000).default(1000),
   GRACEFUL_DRAIN_MS: z.coerce.number().int().nonnegative().default(60_000),
+
+  // Multi-tenant: реестр клиентов + пер-клиентские дефолты.
+  // Путь НЕ задан → single-tenant legacy из PROXY_INBOUND_TOKEN. Путь задан явно, но
+  // файл отсутствует/битый → fail-fast (см. src/clients/registry.ts).
+  CLIENTS_CONFIG_PATH: z.string().optional(),
+  CLIENT_DEFAULT_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(1),
+  CLIENT_DEFAULT_MAX_PENDING: z.coerce.number().int().min(1).max(1000).default(10),
+  CLIENT_DEFAULT_ALLOWED_MODELS: csvList,
 
   // Storage
   DB_PATH: z.string().default('/var/lib/proxy_llm/prod.db'),

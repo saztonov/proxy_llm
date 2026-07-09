@@ -4,15 +4,19 @@ export class AlertCooldown {
 
   constructor(private readonly cooldownMs: Map<string, number>) {}
 
-  shouldSend(key: string, now: number = Date.now()): boolean {
-    const cooldown = this.cooldownMs.get(key) ?? 0;
+  /**
+   * kind — определяет длительность cooldown; instanceKey — троттлится независимо
+   * (для пер-клиентских алертов, напр. `error_streak:passdesk`). По умолчанию instanceKey = kind.
+   */
+  shouldSend(kind: string, now: number = Date.now(), instanceKey: string = kind): boolean {
+    const cooldown = this.cooldownMs.get(kind) ?? 0;
     if (cooldown === 0) return true;
-    const last = this.lastSentAt.get(key);
+    const last = this.lastSentAt.get(instanceKey);
     if (last === undefined) return true;
     return now - last >= cooldown;
   }
 
-  markSent(key: string, now: number = Date.now()): void {
-    this.lastSentAt.set(key, now);
+  markSent(kind: string, now: number = Date.now(), instanceKey: string = kind): void {
+    this.lastSentAt.set(instanceKey, now);
   }
 }

@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import PQueue from 'p-queue';
 import type { Config } from '../config.js';
 import type { Logger } from '../utils/logger.js';
 import { newRequestId, isValidIdempotencyKey, isValidRequestId } from '../utils/ids.js';
@@ -7,20 +6,26 @@ import { ActiveRequests, ActiveDedupFullError } from '../dedup/active-requests.j
 import { OpenRouterClient, type ProxyResult } from '../upstream/openrouter-client.js';
 import { createDeadline } from '../upstream/deadline.js';
 import { clientWantedStreaming } from '../upstream/sanitize-payload.js';
+import { resolveModel } from '../upstream/resolve-model.js';
 import { sanitizeForLog } from '../utils/sanitize.js';
 import { sanitizeErrorForLog } from '../utils/sanitize-error.js';
 import type { RequestsRepo, RequestRecord } from '../storage/requests-repo.js';
 import type { AlertEngine } from '../alerts/rules.js';
 import type { ActiveSource, ActiveRequestSnapshot } from '../watchdog/ticker.js';
 import { makeBearerAuthHook } from '../auth/bearer.js';
+import type { ClientRegistry, ClientConfig } from '../clients/registry.js';
+import type { FairnessManager } from '../concurrency/fairness.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
     proxyContext?: {
       requestId: string;
       idempotencyKey: string | null;
+      clientId: string;
+      client: ClientConfig;
       tsReceived: number;
       admitted?: boolean;
+      released?: boolean;
     };
   }
 }
@@ -28,9 +33,10 @@ declare module 'fastify' {
 export interface ChatRoutesDeps {
   config: Config;
   logger: Logger;
+  registry: ClientRegistry;
+  fairness: FairnessManager;
   active: ActiveRequests;
   client: OpenRouterClient;
-  queue: PQueue;
   repo: RequestsRepo;
   alerts: AlertEngine;
   activeMetrics: ActiveMetrics;
@@ -68,20 +74,26 @@ export class ActiveMetrics implements ActiveSource {
   }
 }
 
+/** Идемпотентно освобождает admission-слот (onResponse / onRequestAbort). */
+function releaseAdmission(req: FastifyRequest, deps: ChatRoutesDeps): void {
+  const ctx = req.proxyContext;
+  if (ctx?.admitted && !ctx.released) {
+    ctx.released = true;
+    deps.fairness.release(ctx.clientId);
+  }
+}
+
+function dedupKeyOf(clientId: string, idempotencyKey: string): string {
+  return `${clientId}:${idempotencyKey}`;
+}
+
 export async function registerChatRoutes(
   app: FastifyInstance,
   deps: ChatRoutesDeps,
 ): Promise<void> {
-  const bearerAuth = makeBearerAuthHook(deps.config.PROXY_INBOUND_TOKEN);
+  const bearerAuth = makeBearerAuthHook(deps.registry);
 
   const CHAT_PATHS = new Set(['/api/v1/chat/completions', '/v1/chat/completions']);
-
-  /**
-   * Атомарный счётчик "запросов, прошедших admission, но ещё не завершившихся".
-   * Инкрементируется в onRequest (после успешной валидации), декрементируется в onResponse.
-   * Это закрывает race между onRequest hook и queue.add (которое внутри handler).
-   */
-  let inFlight = 0;
 
   // Admission control: ДО парсинга body, на onRequest hook.
   app.addHook('onRequest', async (req, reply) => {
@@ -89,9 +101,10 @@ export async function registerChatRoutes(
     const path = req.url.split('?')[0];
     if (!path || !CHAT_PATHS.has(path)) return;
 
-    // Bearer проверяем здесь же — отказ до чтения body.
+    // Bearer проверяем здесь же — отказ до чтения body. Резолвит req.authClient.
     await bearerAuth(req, reply);
     if (reply.sent) return;
+    const client = req.authClient!;
 
     const cl = Number(req.headers['content-length'] ?? '0');
     if (cl > 0 && cl > deps.config.BODY_LIMIT_BYTES) {
@@ -113,47 +126,48 @@ export async function registerChatRoutes(
     req.proxyContext = {
       requestId,
       idempotencyKey,
+      clientId: client.clientId,
+      client,
       tsReceived: Date.now(),
     };
 
-    // Если ключ уже активен — пропускаем (это dedup), счётчик не трогаем.
-    if (idempotencyKey && deps.active.has(idempotencyKey)) return;
+    // Если ключ уже активен (для этого же клиента) — join, admission-слот не занимаем.
+    if (idempotencyKey && deps.active.has(dedupKeyOf(client.clientId, idempotencyKey))) return;
 
-    if (
-      inFlight >= deps.config.QUEUE_MAX_PENDING ||
-      deps.active.size() >= deps.config.MAX_ACTIVE_DEDUP_KEYS
-    ) {
+    // Синхронная проверка+резервирование (без await между проверкой и ++, закрывает race).
+    const admit = deps.fairness.tryAdmit(client);
+    if (admit !== 'ok') {
       reply.header('Retry-After', '10');
+      const code = admit === 'dedup_full' ? 'dedup_full' : 'queue_full';
       reply.code(503).send({
-        error: { code: 'queue_full', message: 'proxy queue is full, retry later' },
+        error: { code, message: 'proxy queue is full, retry later' },
       });
       return;
     }
-
-    inFlight++;
     req.proxyContext.admitted = true;
   });
 
   app.addHook('onResponse', async (req, _reply) => {
-    if (req.proxyContext?.admitted) {
-      inFlight = Math.max(0, inFlight - 1);
-    }
+    releaseAdmission(req, deps);
+  });
+
+  // Клиент оборвал соединение до ответа — освобождаем слот и отменяем upstream.
+  app.addHook('onRequestAbort', async (req) => {
+    releaseAdmission(req, deps);
+    const rid = req.proxyContext?.requestId;
+    if (rid) deps.activeMetrics.abort(rid);
   });
 
   app.post(
     '/api/v1/chat/completions',
-    {
-      bodyLimit: deps.config.BODY_LIMIT_BYTES,
-    },
+    { bodyLimit: deps.config.BODY_LIMIT_BYTES },
     async (req, reply) => handleChat(req, reply, deps),
   );
 
   // Алиас для legacy-клиентов
   app.post(
     '/v1/chat/completions',
-    {
-      bodyLimit: deps.config.BODY_LIMIT_BYTES,
-    },
+    { bodyLimit: deps.config.BODY_LIMIT_BYTES },
     async (req, reply) => handleChat(req, reply, deps),
   );
 }
@@ -187,6 +201,20 @@ async function handleChat(
     return;
   }
 
+  // Выбор модели: request.model (если разрешён) → дефолт клиента → глобальный дефолт.
+  const modelOutcome = resolveModel(incoming.model, ctx.client);
+  if (!modelOutcome.ok) {
+    reply.code(400).send({
+      error: {
+        code: 'model_not_allowed',
+        message: 'requested model is not allowed for this client',
+        allowed: modelOutcome.allowed,
+      },
+    });
+    return;
+  }
+  const modelResolution = modelOutcome.resolution;
+
   const requestBytes = Buffer.byteLength(JSON.stringify(incoming), 'utf8');
   const clientIp = req.ip;
 
@@ -198,17 +226,26 @@ async function handleChat(
   const abort = new AbortController();
   deps.activeMetrics.register(ctx.requestId, deadline.deadlineAt, abort);
 
+  const clientQueue = deps.fairness.queueFor(ctx.clientId);
   const factory = async (): Promise<ProxyResult> =>
-    deps.queue.add(() => deps.client.execute({
-      incoming,
-      requestId: ctx.requestId,
-      deadline,
-    })) as Promise<ProxyResult>;
+    clientQueue.add(() =>
+      deps.fairness.globalQueue.add(() =>
+        deps.client.execute({
+          incoming,
+          requestId: ctx.requestId,
+          deadline,
+          modelResolution,
+          clientId: ctx.clientId,
+          signal: abort.signal,
+          ...(ctx.client.openrouterApiKey ? { apiKey: ctx.client.openrouterApiKey } : {}),
+        }),
+      ),
+    ) as Promise<ProxyResult>;
 
   let result: ProxyResult;
   try {
     if (ctx.idempotencyKey) {
-      result = await deps.active.registerOrJoin(ctx.idempotencyKey, factory);
+      result = await deps.active.registerOrJoin(dedupKeyOf(ctx.clientId, ctx.idempotencyKey), factory);
     } else {
       result = await factory();
     }
@@ -222,7 +259,7 @@ async function handleChat(
       return;
     }
     deps.logger.error({ err: sanitizeErrorForLog(err), requestId: ctx.requestId }, 'handler error');
-    persistRecord(deps, ctx.requestId, ctx.idempotencyKey, ctx.tsReceived, {
+    persistRecord(deps, ctx, {
       classification: 'upstream_error',
       statusCode: 500,
       bodyText: '',
@@ -236,7 +273,7 @@ async function handleChat(
     deps.activeMetrics.unregister(ctx.requestId);
   }
 
-  persistRecord(deps, ctx.requestId, ctx.idempotencyKey, ctx.tsReceived, result, requestBytes, clientIp);
+  persistRecord(deps, ctx, result, requestBytes, clientIp);
 
   for (const [k, v] of Object.entries(result.headers)) {
     if (v !== undefined) reply.header(k, v);
@@ -247,25 +284,23 @@ async function handleChat(
 
 function persistRecord(
   deps: ChatRoutesDeps,
-  requestId: string,
-  idempotencyKey: string | null,
-  tsReceived: number,
+  ctx: NonNullable<FastifyRequest['proxyContext']>,
   result: ProxyResult,
   requestBytes: number,
   clientIp: string,
 ): void {
   const tsCompleted = Date.now();
   const record: RequestRecord = {
-    request_id: requestId,
-    idempotency_key: idempotencyKey,
+    request_id: ctx.requestId,
+    idempotency_key: ctx.idempotencyKey,
     upstream_id: result.upstreamId ?? null,
-    ts_received: tsReceived,
+    ts_received: ctx.tsReceived,
     ts_completed: tsCompleted,
     model_used: result.modelUsed ?? null,
     fallback_used: result.fallbackUsed,
     status: mapStatus(result.classification),
     http_status: result.statusCode,
-    latency_ms: tsCompleted - tsReceived,
+    latency_ms: tsCompleted - ctx.tsReceived,
     request_bytes: requestBytes,
     response_bytes: Buffer.byteLength(result.bodyText, 'utf8'),
     prompt_tokens: result.usage?.prompt_tokens ?? null,
@@ -276,7 +311,8 @@ function persistRecord(
     error_code: result.errorCode ?? null,
     error_msg: result.errorMsg ? sanitizeForLog(result.errorMsg, 500) : null,
     client_ip: clientIp,
-    source: 'passdesk',
+    source: ctx.client.source,
+    client_id: ctx.clientId,
   };
 
   try {
@@ -292,6 +328,7 @@ function persistRecord(
       httpStatus: record.http_status,
       latencyMs: record.latency_ms,
       errorCode: record.error_code,
+      clientId: record.client_id,
     })
     .catch((err: unknown) =>
       deps.logger.warn({ err: sanitizeErrorForLog(err) }, 'alert onEvent failed'),

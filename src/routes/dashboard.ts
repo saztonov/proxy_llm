@@ -65,6 +65,7 @@ export async function registerDashboard(
         hour: deps.repo.aggregateSince(now - 60 * 60_000),
         p95DayMs: deps.repo.p95LatencySince(now - 24 * 60 * 60_000),
         activeCount: deps.activeMetrics.size(),
+        perClientDay: deps.repo.perClientAggregate(now - 24 * 60 * 60_000),
       });
     },
   );

@@ -33,6 +33,7 @@ export interface RequestRecord {
   error_msg: string | null;
   client_ip: string | null;
   source: string;
+  client_id: string | null;
 }
 
 export interface AggregateRow {
@@ -56,12 +57,22 @@ export interface DashboardRow {
   total_tokens: number | null;
   upstream_id: string | null;
   error_code: string | null;
+  client_id: string | null;
+}
+
+export interface PerClientRow {
+  client_id: string | null;
+  total: number;
+  errors: number;
+  total_tokens: number | null;
 }
 
 export class RequestsRepo {
   private readonly insertStmt;
   private readonly listRecentStmt;
   private readonly aggregateStmt;
+  private readonly aggregateClientStmt;
+  private readonly perClientStmt;
   private readonly recentStatusStmt;
 
   constructor(private readonly db: Database.Database) {
@@ -75,7 +86,7 @@ export class RequestsRepo {
         prompt_tokens, completion_tokens, total_tokens,
         attempt_count, retry_after_seconds,
         error_code, error_msg,
-        client_ip, source
+        client_ip, source, client_id
       ) VALUES (
         @request_id, @idempotency_key, @upstream_id,
         @ts_received, @ts_completed,
@@ -85,13 +96,13 @@ export class RequestsRepo {
         @prompt_tokens, @completion_tokens, @total_tokens,
         @attempt_count, @retry_after_seconds,
         @error_code, @error_msg,
-        @client_ip, @source
+        @client_ip, @source, @client_id
       )
     `);
 
     this.listRecentStmt = db.prepare<[number]>(`
       SELECT id, request_id, ts_received, ts_completed, model_used,
-             status, http_status, latency_ms, total_tokens, upstream_id, error_code
+             status, http_status, latency_ms, total_tokens, upstream_id, error_code, client_id
       FROM requests
       ORDER BY id DESC
       LIMIT ?
@@ -109,6 +120,30 @@ export class RequestsRepo {
       WHERE ts_received >= ?
     `);
 
+    this.aggregateClientStmt = db.prepare<[number, string]>(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
+        SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS errors,
+        AVG(latency_ms) AS avg_latency_ms,
+        NULL AS p95_latency_ms,
+        SUM(total_tokens) AS total_tokens
+      FROM requests
+      WHERE ts_received >= ? AND client_id = ?
+    `);
+
+    this.perClientStmt = db.prepare<[number]>(`
+      SELECT
+        client_id,
+        COUNT(*) AS total,
+        SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS errors,
+        SUM(total_tokens) AS total_tokens
+      FROM requests
+      WHERE ts_received >= ?
+      GROUP BY client_id
+      ORDER BY total DESC
+    `);
+
     this.recentStatusStmt = db.prepare<[number]>(`
       SELECT status FROM requests ORDER BY id DESC LIMIT ?
     `);
@@ -122,8 +157,16 @@ export class RequestsRepo {
     return this.listRecentStmt.all(limit) as DashboardRow[];
   }
 
-  aggregateSince(tsMs: number): AggregateRow {
+  aggregateSince(tsMs: number, clientId?: string): AggregateRow {
+    if (clientId !== undefined) {
+      return this.aggregateClientStmt.get(tsMs, clientId) as AggregateRow;
+    }
     return this.aggregateStmt.get(tsMs) as AggregateRow;
+  }
+
+  /** Пер-клиентская сводка за период (для дашборда/статистики). */
+  perClientAggregate(tsMs: number): PerClientRow[] {
+    return this.perClientStmt.all(tsMs) as PerClientRow[];
   }
 
   /** Берёт latency значений из последних N успешных запросов и считает p95 локально. */

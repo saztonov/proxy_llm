@@ -62,12 +62,14 @@ describe('storage', () => {
       error_msg: null,
       client_ip: '127.0.0.1',
       source: 'passdesk',
+      client_id: 'passdesk',
     });
 
     const rows = repo.listRecent(10);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe('success');
     expect(rows[0]!.upstream_id).toBe('gen-1');
+    expect(rows[0]!.client_id).toBe('passdesk');
   });
 
   it('aggregates correctly', () => {
@@ -94,12 +96,38 @@ describe('storage', () => {
         error_code: null,
         error_msg: null,
         client_ip: '127.0.0.1',
-        source: 'passdesk',
+        source: i < 3 ? 'clientA' : 'clientB',
+        client_id: i < 3 ? 'clientA' : 'clientB',
       });
     }
     const agg = repo.aggregateSince(now - 1000);
     expect(agg.total).toBe(5);
     expect(agg.success).toBe(3);
     expect(agg.errors).toBe(2);
+
+    // Пер-клиентский фильтр и разбивка.
+    const aggA = repo.aggregateSince(now - 1000, 'clientA');
+    expect(aggA.total).toBe(3);
+    expect(aggA.errors).toBe(0);
+
+    const perClient = repo.perClientAggregate(now - 1000);
+    const byId = Object.fromEntries(perClient.map((r) => [r.client_id, r]));
+    expect(byId['clientA']!.total).toBe(3);
+    expect(byId['clientB']!.total).toBe(2);
+    expect(byId['clientB']!.errors).toBe(2);
+  });
+
+  it('has client_id column and ALTER is idempotent on reopen', () => {
+    const cols = handle.db.pragma('table_info(requests)') as { name: string }[];
+    expect(cols.map((c) => c.name)).toContain('client_id');
+
+    // Повторное открытие той же БД не должно падать (guard PRAGMA table_info + ALTER).
+    handle.close();
+    const again = openDb(join(dir, 't.db'));
+    const cols2 = again.db.pragma('table_info(requests)') as { name: string }[];
+    expect(cols2.map((c) => c.name).filter((n) => n === 'client_id')).toHaveLength(1);
+    again.close();
+    // reopen для afterEach.close()
+    handle = openDb(join(dir, 't.db'));
   });
 });

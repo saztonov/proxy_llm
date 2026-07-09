@@ -29,6 +29,11 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
     MAX_ACTIVE_DEDUP_KEYS: 100,
     GRACEFUL_DRAIN_MS: 1000,
 
+    CLIENTS_CONFIG_PATH: undefined,
+    CLIENT_DEFAULT_MAX_CONCURRENCY: 2,
+    CLIENT_DEFAULT_MAX_PENDING: 10,
+    CLIENT_DEFAULT_ALLOWED_MODELS: [],
+
     DB_PATH: join(dir, 'test.db'),
 
     DASHBOARD_USER: 'admin',

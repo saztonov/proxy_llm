@@ -661,4 +661,64 @@ systemd-юнит запускается от `proxy_llm`, права на пор
    - [alerts-glossary.md](alerts-glossary.md) — расшифровка каждого алерта
    - [passdesk-migration.md](passdesk-migration.md) — детали миграции PassDesk
 2. Изучите код в `c:\Users\Usr\claudeprojects\proxy_llm\src\` — он компактный.
-3. Запустите тесты локально (`npm test`) — покрытие 60 тестов на все edge-cases.
+3. Запустите тесты локально (`npm test`).
+
+---
+
+## Часть 8. Мультитенантность — несколько клиентов на одном прокси
+
+Прокси поддерживает несколько арендаторов: **у каждого свой токен**, свои лимиты
+конкурентности, при желании — своя модель и свой ключ OpenRouter. Остаётся синхронным
+шлюзом (никакого брокера/воркера на прокси — у клиентов свои очереди).
+
+### 8.1. Реестр клиентов `clients.json`
+
+Файл-реестр (пример — `deploy/clients.example.json`). Разместить и защитить:
+
+```bash
+# [ROOT]
+cp /opt/proxy_llm/deploy/clients.example.json /etc/proxy_llm/clients.json
+nano /etc/proxy_llm/clients.json          # прописать clientId, токены, модели, лимиты
+chown root:proxy_llm /etc/proxy_llm/clients.json
+chmod 640 /etc/proxy_llm/clients.json
+```
+
+Включить в `/etc/proxy_llm/.env`:
+
+```env
+CLIENTS_CONFIG_PATH=/etc/proxy_llm/clients.json
+# рекомендуемые общие потолки для 2-3 клиентов (память на 2 ГБ VPS):
+QUEUE_CONCURRENCY=3
+QUEUE_MAX_PENDING=6
+```
+
+Правила загрузки:
+- `CLIENTS_CONFIG_PATH` **не задан** → single-tenant legacy из `PROXY_INBOUND_TOKEN` (как раньше).
+- Путь **задан, но файл отсутствует/битый/не проходит валидацию** → сервис **не стартует**
+  (fail-fast; смотреть `journalctl -u proxy_llm`).
+- `PROXY_INBOUND_TOKEN` **всегда** остаётся валидным (clientId `passdesk`) — совместимость.
+
+Поля клиента — в шапке `deploy/clients.example.json` (clientId, tokens/tokenSha256,
+defaultModel, allowedModels, fallbackModels, maxConcurrency, maxPending, openrouterApiKey, source).
+Пустой `allowedModels` = клиент модель не выбирает (форс дефолта). Непустой → клиент может
+прислать `model` из списка; иначе → `400 model_not_allowed`.
+
+Применить: `systemctl reload`/`restart proxy_llm` (реестр читается на старте). Проверить:
+`journalctl -u proxy_llm --since '1 min ago'` — не должно быть `ClientRegistryError`.
+
+### 8.2. Онбординг нового клиента
+
+1. Сгенерировать токен: `openssl rand -hex 32`, добавить запись клиента в `clients.json`
+   (или положить `tokenSha256` = `printf %s '<токен>' | sha256sum`, чтобы не хранить открытый).
+2. Добавить egress-IP клиента в `location /api/` nginx (`allow <IP>;` перед `deny all;`),
+   `nginx -t && systemctl reload nginx`.
+3. `systemctl reload proxy_llm`.
+4. Передать клиенту токен по защищённому каналу + какие модели ему разрешены. Инструкция
+   подключения — скилл `.claude/skills/connect-proxy-llm/`.
+
+### 8.3. Учёт по клиентам
+
+Журнал (`requests`) содержит колонку `client_id`; `/dashboard/stats.json` отдаёт `perClientDay`
+(разбивка запросов/ошибок/токенов по клиентам). Серия ошибок (`error_streak`) считается
+пер-клиентски. Память: пик ~80–100 МБ на один max-size (26 МБ) запрос, потолок задаёт
+`QUEUE_MAX_PENDING`; если реальные payload меньше — снизьте `BODY_LIMIT_BYTES` и поднимите потолки.
