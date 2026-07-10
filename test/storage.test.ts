@@ -117,6 +117,54 @@ describe('storage', () => {
     expect(byId['clientB']!.errors).toBe(2);
   });
 
+  it('errorBreakdownSince groups errors by status/error_code, skips success, sorts by count', () => {
+    const now = Date.now();
+    const mk = (status: string, error_code: string | null) => ({
+      request_id: `r-${Math.random().toString(36).slice(2)}`,
+      idempotency_key: null,
+      upstream_id: null,
+      ts_received: now,
+      ts_completed: now + 10,
+      model_used: 'm',
+      fallback_used: null,
+      status: status as never,
+      http_status: 200,
+      latency_ms: 10,
+      request_bytes: 1,
+      response_bytes: 1,
+      prompt_tokens: 1,
+      completion_tokens: 1,
+      total_tokens: 2,
+      attempt_count: 1,
+      retry_after_seconds: null,
+      error_code,
+      error_msg: null,
+      client_ip: '127.0.0.1',
+      source: 'x',
+      client_id: 'x',
+    });
+    // 3× malformed_success/finish_reason_error, 1× upstream_error/400, 2× success (не считаются)
+    repo.insert(mk('malformed_success', 'finish_reason_error'));
+    repo.insert(mk('malformed_success', 'finish_reason_error'));
+    repo.insert(mk('malformed_success', 'finish_reason_error'));
+    repo.insert(mk('upstream_error', '400'));
+    repo.insert(mk('success', null));
+    repo.insert(mk('success', null));
+
+    const breakdown = repo.errorBreakdownSince(now - 1000);
+    expect(breakdown).toHaveLength(2);
+    // Отсортировано по убыванию количества.
+    expect(breakdown[0]).toMatchObject({
+      status: 'malformed_success',
+      error_code: 'finish_reason_error',
+      n: 3,
+    });
+    expect(breakdown[1]).toMatchObject({ status: 'upstream_error', error_code: '400', n: 1 });
+
+    // Старое окно — ничего не попадает.
+    expect(repo.errorBreakdownSince(now + 10_000)).toHaveLength(0);
+  });
+
   it('has client_id column and ALTER is idempotent on reopen', () => {
     const cols = handle.db.pragma('table_info(requests)') as { name: string }[];
     expect(cols.map((c) => c.name)).toContain('client_id');

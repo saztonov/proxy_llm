@@ -8,7 +8,7 @@
 export type Classification =
   | { kind: 'success' }
   | { kind: 'body_level_error'; code: string; message: string; retryable: boolean }
-  | { kind: 'malformed_success'; reason: string }
+  | { kind: 'malformed_success'; reason: string; retryable: boolean }
   | { kind: 'upstream_error'; httpStatus: number; retryable: boolean; code?: string; message?: string }
   | { kind: 'network_error'; retryable: true; code?: string; message?: string }
   | { kind: 'upstream_response_too_large' };
@@ -46,20 +46,21 @@ export function classifyHttp(statusCode: number, parsed: unknown): Classificatio
     }
 
     if (!isObj(parsed) || !Array.isArray(parsed.choices) || parsed.choices.length === 0) {
-      return { kind: 'malformed_success', reason: 'missing_choices' };
+      return { kind: 'malformed_success', reason: 'missing_choices', retryable: true };
     }
 
     const first = parsed.choices[0] as Record<string, unknown> | undefined;
     if (first && first.finish_reason === 'error') {
-      return { kind: 'malformed_success', reason: 'finish_reason_error' };
+      return { kind: 'malformed_success', reason: 'finish_reason_error', retryable: true };
     }
 
     const message = first && isObj(first.message) ? (first.message as Record<string, unknown>) : null;
     const content = message?.content;
     if (content === '' || content === null || content === undefined) {
       // Пустой content может быть валиден (если есть tool_calls), но для OCR обычно нет.
+      // Не ретраим: повтор легитимно пустого ответа лишь потратит попытку.
       if (!message || (!('tool_calls' in message) && !('refusal' in message))) {
-        return { kind: 'malformed_success', reason: 'empty_content' };
+        return { kind: 'malformed_success', reason: 'empty_content', retryable: false };
       }
     }
 

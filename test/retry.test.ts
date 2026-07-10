@@ -32,25 +32,37 @@ describe('retry classification', () => {
     }
   });
 
-  it('classifies 200 without choices as malformed_success', () => {
+  it('classifies 200 without choices as retryable malformed_success', () => {
     const c = classifyHttp(200, { id: 'gen-1', model: 'm' });
     expect(c.kind).toBe('malformed_success');
+    if (c.kind === 'malformed_success') {
+      expect(c.reason).toBe('missing_choices');
+      expect(c.retryable).toBe(true);
+    }
   });
 
-  it('classifies 200 with empty content as malformed_success', () => {
+  it('classifies 200 with empty content as non-retryable malformed_success', () => {
     const c = classifyHttp(200, {
       id: 'gen-1',
       choices: [{ message: { role: 'assistant', content: '' }, finish_reason: 'stop' }],
     });
     expect(c.kind).toBe('malformed_success');
+    if (c.kind === 'malformed_success') {
+      expect(c.reason).toBe('empty_content');
+      expect(c.retryable).toBe(false);
+    }
   });
 
-  it('classifies 200 with finish_reason=error as malformed_success', () => {
+  it('classifies 200 with finish_reason=error as retryable malformed_success', () => {
     const c = classifyHttp(200, {
       id: 'gen-1',
       choices: [{ message: { content: 'partial' }, finish_reason: 'error' }],
     });
     expect(c.kind).toBe('malformed_success');
+    if (c.kind === 'malformed_success') {
+      expect(c.reason).toBe('finish_reason_error');
+      expect(c.retryable).toBe(true);
+    }
   });
 
   it('classifies 429 as retryable upstream_error', () => {

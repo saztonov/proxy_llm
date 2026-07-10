@@ -255,7 +255,7 @@ export class OpenRouterClient {
     if (attempt >= this.config.UPSTREAM_MAX_ATTEMPTS) return false;
     if (deadline.remaining() <= this.config.MIN_REMAINING_MS) return false;
     if (classification.kind === 'success') return false;
-    if (classification.kind === 'malformed_success') return false;
+    if (classification.kind === 'malformed_success') return classification.retryable;
     if (classification.kind === 'body_level_error') return classification.retryable;
     if (classification.kind === 'upstream_error') return classification.retryable;
     if (classification.kind === 'network_error') return true;

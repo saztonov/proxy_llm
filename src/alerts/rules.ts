@@ -135,14 +135,22 @@ export class AlertEngine {
     const since = Date.now() - 24 * 60 * 60_000;
     const agg = this.repo.aggregateSince(since);
     const p95 = this.repo.p95LatencySince(since);
-    const text = [
+    const lines = [
       '📊 <b>proxy_llm</b> — дневная сводка (24ч)',
       `Запросов: ${agg.total} (успешных: ${agg.success}, ошибок: ${agg.errors})`,
       `Средняя latency: ${agg.avg_latency_ms !== null ? Math.round(agg.avg_latency_ms) + ' ms' : '—'}`,
       `p95 latency: ${p95 !== null ? p95 + ' ms' : '—'}`,
       `Токенов всего: ${agg.total_tokens ?? 0}`,
-    ].join('\n');
-    await this.fire('daily_digest', text);
+    ];
+    if (agg.errors > 0) {
+      const breakdown = this.repo
+        .errorBreakdownSince(since)
+        .slice(0, 8)
+        .map((r) => `${r.status}${r.error_code ? '/' + r.error_code : ''} ×${r.n}`)
+        .join(', ');
+      if (breakdown) lines.push(`Ошибки: ${breakdown}`);
+    }
+    await this.fire('daily_digest', lines.join('\n'));
   }
 
   private async checkErrorRate(): Promise<void> {

@@ -67,12 +67,19 @@ export interface PerClientRow {
   total_tokens: number | null;
 }
 
+export interface ErrorBreakdownRow {
+  status: RequestStatus;
+  error_code: string | null;
+  n: number;
+}
+
 export class RequestsRepo {
   private readonly insertStmt;
   private readonly listRecentStmt;
   private readonly aggregateStmt;
   private readonly aggregateClientStmt;
   private readonly perClientStmt;
+  private readonly errorBreakdownStmt;
   private readonly recentStatusStmt;
 
   constructor(private readonly db: Database.Database) {
@@ -144,6 +151,16 @@ export class RequestsRepo {
       ORDER BY total DESC
     `);
 
+    // Разбивка ошибок по типу за период (для дневного дайджеста). Без client_id —
+    // совместимо со схемой до мультитенантности.
+    this.errorBreakdownStmt = db.prepare<[number]>(`
+      SELECT status, error_code, COUNT(*) AS n
+      FROM requests
+      WHERE ts_received >= ? AND status != 'success'
+      GROUP BY status, error_code
+      ORDER BY n DESC
+    `);
+
     this.recentStatusStmt = db.prepare<[number]>(`
       SELECT status FROM requests ORDER BY id DESC LIMIT ?
     `);
@@ -167,6 +184,11 @@ export class RequestsRepo {
   /** Пер-клиентская сводка за период (для дашборда/статистики). */
   perClientAggregate(tsMs: number): PerClientRow[] {
     return this.perClientStmt.all(tsMs) as PerClientRow[];
+  }
+
+  /** Разбивка ошибок (status != 'success') по status/error_code за период. */
+  errorBreakdownSince(tsMs: number): ErrorBreakdownRow[] {
+    return this.errorBreakdownStmt.all(tsMs) as ErrorBreakdownRow[];
   }
 
   /** Берёт latency значений из последних N успешных запросов и считает p95 локально. */
