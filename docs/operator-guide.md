@@ -673,15 +673,33 @@ systemd-юнит запускается от `proxy_llm`, права на пор
 
 ### 8.1. Реестр клиентов `clients.json`
 
-Файл-реестр (пример — `deploy/clients.example.json`). Разместить и защитить:
+Файл-реестр. Структуру смотреть в `deploy/clients.example.json`, но **копировать его не нужно**:
+плейсхолдеры `REPLACE_ME` намеренно не проходят валидацию, чтобы забытая замена токена
+роняла старт, а не поднимала сервис с токеном из репозитория. Создавать сразу с первым клиентом:
 
 ```bash
 # [ROOT]
-cp /opt/proxy_llm/deploy/clients.example.json /etc/proxy_llm/clients.json
-nano /etc/proxy_llm/clients.json          # прописать clientId, токены, модели, лимиты
+set +o history                            # токен не должен попасть в ~/.bash_history
+TOKEN=$(openssl rand -hex 32)
+
+cat > /etc/proxy_llm/clients.json <<EOF
+{
+  "clients": [
+    { "clientId": "estimat", "tokens": ["$TOKEN"],
+      "defaultModel": "google/gemini-2.5-flash",
+      "allowedModels": ["google/gemini-2.5-flash"],
+      "maxConcurrency": 2, "maxPending": 2 }
+  ]
+}
+EOF
+
 chown root:proxy_llm /etc/proxy_llm/clients.json
 chmod 640 /etc/proxy_llm/clients.json
+python3 -m json.tool /etc/proxy_llm/clients.json >/dev/null && echo "JSON OK"
+echo "TOKEN estimat: $TOKEN"; unset TOKEN; set -o history
 ```
+
+Пошаговые команды добавления/ротации/отзыва — `docs/vps-update.md`.
 
 Включить в `/etc/proxy_llm/.env`:
 
@@ -698,21 +716,25 @@ QUEUE_MAX_PENDING=6
   (fail-fast; смотреть `journalctl -u proxy_llm`).
 - `PROXY_INBOUND_TOKEN` **всегда** остаётся валидным (clientId `passdesk`) — совместимость.
 
-Поля клиента — в шапке `deploy/clients.example.json` (clientId, tokens/tokenSha256,
-defaultModel, allowedModels, fallbackModels, maxConcurrency, maxPending, openrouterApiKey, source).
+Поля клиента (clientId, tokens/tokenSha256, defaultModel, allowedModels, fallbackModels,
+maxConcurrency, maxPending, openrouterApiKey, source) — таблица в `docs/vps-update.md`,
+источник правды — `src/clients/registry-schema.ts`. Схема строгая: неизвестное поле или
+опечатка в имени → сервис не стартует.
 Пустой `allowedModels` = клиент модель не выбирает (форс дефолта). Непустой → клиент может
 прислать `model` из списка; иначе → `400 model_not_allowed`.
 
-Применить: `systemctl reload`/`restart proxy_llm` (реестр читается на старте). Проверить:
+Применить: `systemctl restart proxy_llm` — реестр читается только на старте, а `ExecReload`
+в юните не определён, поэтому `reload` вернёт «Job type reload is not applicable». Проверить:
 `journalctl -u proxy_llm --since '1 min ago'` — не должно быть `ClientRegistryError`.
 
 ### 8.2. Онбординг нового клиента
 
 1. Сгенерировать токен: `openssl rand -hex 32`, добавить запись клиента в `clients.json`
    (или положить `tokenSha256` = `printf %s '<токен>' | sha256sum`, чтобы не хранить открытый).
+   Готовые команды на `jq` — в `docs/vps-update.md`, раздел 4.
 2. Добавить egress-IP клиента в `location /api/` nginx (`allow <IP>;` перед `deny all;`),
    `nginx -t && systemctl reload nginx`.
-3. `systemctl reload proxy_llm`.
+3. `systemctl restart proxy_llm` (именно restart — см. 8.1).
 4. Передать клиенту токен по защищённому каналу + какие модели ему разрешены. Инструкция
    подключения — скилл `.claude/skills/connect-proxy-llm/`.
 

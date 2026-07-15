@@ -1,7 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { loadClientRegistry, ClientRegistryError } from '../src/clients/registry.js';
 import { makeTestConfig } from './helpers/test-config.js';
@@ -70,6 +71,31 @@ describe('ClientRegistry', () => {
     });
     const config = makeTestConfig({ CLIENTS_CONFIG_PATH: path });
     expect(() => loadClientRegistry(config)).toThrow(/дублирующийся clientId/);
+  });
+
+  describe('deploy/clients.example.json', () => {
+    const templatePath = fileURLToPath(new URL('../deploy/clients.example.json', import.meta.url));
+    const template = () => JSON.parse(readFileSync(templatePath, 'utf8')) as { clients: Record<string, unknown>[] };
+
+    it('плейсхолдеры не проходят валидацию: скопированный as-is шаблон не поднимет сервис', () => {
+      // Иначе REPLACE_ME стал бы рабочим токеном, известным всем, у кого есть репозиторий.
+      const p = writeClients(template());
+      const config = makeTestConfig({ CLIENTS_CONFIG_PATH: p });
+      expect(() => loadClientRegistry(config)).toThrow(ClientRegistryError);
+    });
+
+    it('структура шаблона соответствует схеме: после замены токенов загружается', () => {
+      const t = template();
+      t.clients.forEach((c, i) => {
+        if (c.tokens) c.tokens = [`example-token-${i}-1234567890`];
+        if (c.tokenSha256) c.tokenSha256 = [sha256(`example-token-${i}`)];
+        if (c.openrouterApiKey) c.openrouterApiKey = 'sk-or-v1-example';
+      });
+      const config = makeTestConfig({ CLIENTS_CONFIG_PATH: writeClients(t) });
+      const reg = loadClientRegistry(config);
+      expect(reg.clients().map((c) => c.clientId).sort()).toEqual(['estimat', 'mosgate', 'passdesk']);
+      expect(reg.resolveToken('example-token-1-1234567890')?.clientId).toBe('estimat');
+    });
   });
 
   it('rejects duplicate token hash across clients', () => {

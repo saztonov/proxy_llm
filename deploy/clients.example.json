@@ -1,33 +1,14 @@
 {
-  "_comment": [
-    "Реестр арендаторов proxy_llm. Путь задаётся env CLIENTS_CONFIG_PATH",
-    "(рекомендуется /etc/proxy_llm/clients.json, chown root:proxy_llm, chmod 640).",
-    "Файл валидируется zod на старте; битый/отсутствующий при явно заданном пути → fail-fast.",
-    "Legacy-токен PROXY_INBOUND_TOKEN всегда резолвится (clientId=passdesk), даже без этого файла.",
-    "",
-    "Поля клиента:",
-    "  clientId       — уникальный id (журнал/лимиты/алерты).",
-    "  tokens         — токены в открытом виде (>=16 симв.). Хранить только у оператора.",
-    "  tokenSha256    — sha256(token) hex, если не хотите класть открытый токен в файл.",
-    "  defaultModel   — модель, если клиент не прислал model (иначе глобальная OPENROUTER_MODEL).",
-    "  allowedModels  — белый список моделей, которые клиент вправе запросить в поле model.",
-    "                   Пусто/нет → клиент НЕ выбирает модель (форс defaultModel), как legacy.",
-    "  fallbackModels — OpenRouter fallback (иначе глобальные OPENROUTER_FALLBACK_MODELS).",
-    "  maxConcurrency — одновременных upstream-вызовов клиента (дефолт CLIENT_DEFAULT_MAX_CONCURRENCY).",
-    "  maxPending     — очередь ожидания клиента сверх maxConcurrency (дефолт CLIENT_DEFAULT_MAX_PENDING).",
-    "  openrouterApiKey — необяз. per-tenant ключ OpenRouter (биллинговая изоляция); иначе глобальный.",
-    "  source         — тег для журнала (дефолт = clientId)."
-  ],
   "clients": [
     {
       "clientId": "passdesk",
-      "tokens": ["<PROXY_INBOUND_TOKEN или отдельный токен PassDesk>"],
+      "tokens": ["REPLACE_ME"],
       "maxConcurrency": 2,
       "maxPending": 4
     },
     {
       "clientId": "estimat",
-      "tokens": ["<токен EstiMat, >=16 символов>"],
+      "tokens": ["REPLACE_ME"],
       "allowedModels": ["google/gemini-2.5-flash", "anthropic/claude-sonnet-5"],
       "defaultModel": "google/gemini-2.5-flash",
       "maxConcurrency": 2,
@@ -35,8 +16,8 @@
     },
     {
       "clientId": "mosgate",
-      "tokenSha256": ["<sha256(токен) в hex>"],
-      "openrouterApiKey": "sk-or-v1-<собственный ключ OpenRouter клиента>",
+      "tokenSha256": ["REPLACE_ME"],
+      "openrouterApiKey": "sk-or-v1-REPLACE_ME",
       "maxConcurrency": 1,
       "maxPending": 2
     }

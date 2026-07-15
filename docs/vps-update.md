@@ -72,13 +72,30 @@ curl -sS http://127.0.0.1:3000/healthz
 
 ## 3. Включение реестра клиентов (разово)
 
-Пока `CLIENTS_CONFIG_PATH` не задан, работает legacy-режим: валиден только `PROXY_INBOUND_TOKEN`, он же `clientId=passdesk`. Чтобы завести несколько потребителей:
+Пока `CLIENTS_CONFIG_PATH` не задан, работает legacy-режим: валиден только `PROXY_INBOUND_TOKEN`, он же `clientId=passdesk`. Чтобы завести несколько потребителей — создать файл сразу с первым клиентом:
 
 ```bash
-cp /opt/proxy_llm/deploy/clients.example.json /etc/proxy_llm/clients.json
-nano /etc/proxy_llm/clients.json        # убрать примеры, вписать реальных клиентов
+set +o history                          # чтобы токен не осел в ~/.bash_history
+TOKEN=$(openssl rand -hex 32)
+
+cat > /etc/proxy_llm/clients.json <<EOF
+{
+  "clients": [
+    {
+      "clientId": "estimat",
+      "tokens": ["$TOKEN"],
+      "defaultModel": "google/gemini-2.5-flash",
+      "allowedModels": ["google/gemini-2.5-flash"],
+      "maxConcurrency": 2,
+      "maxPending": 2
+    }
+  ]
+}
+EOF
+
 chown root:proxy_llm /etc/proxy_llm/clients.json
 chmod 640 /etc/proxy_llm/clients.json
+python3 -m json.tool /etc/proxy_llm/clients.json >/dev/null && echo "JSON OK"
 
 nano /etc/proxy_llm/.env
 #   CLIENTS_CONFIG_PATH=/etc/proxy_llm/clients.json
@@ -87,7 +104,12 @@ nano /etc/proxy_llm/.env
 
 systemctl restart proxy_llm
 journalctl -u proxy_llm --since '1 min ago' | grep -i ClientRegistryError   # должно быть пусто
+
+echo "TOKEN estimat: $TOKEN"            # передать клиенту, затем:
+unset TOKEN; set -o history
 ```
+
+`deploy/clients.example.json` — образец структуры для чтения, а не заготовка для `cp`. Плейсхолдеры в нём (`REPLACE_ME`) намеренно не проходят валидацию: если скопировать шаблон и забыть заменить токен, сервис откажется стартовать с понятным сообщением, а не запустится с токеном, известным всем, у кого есть доступ к репозиторию.
 
 Если `CLIENTS_CONFIG_PATH` задан, а файл битый или отсутствует — сервис не стартует (fail-fast). Перед рестартом проверять синтаксис:
 
@@ -103,28 +125,53 @@ python3 -m json.tool /etc/proxy_llm/clients.json > /dev/null && echo OK
 
 **GUI для этого нет.** Единственная веб-страница `/dashboard` — read-only мониторинг. Онбординг — только через SSH.
 
-### Шаг 1 — сгенерировать токен
+### Шаг 1 — сгенерировать токен и добавить клиента
+
+Через `jq` — не сломает синтаксис файла, в отличие от правки руками:
 
 ```bash
-openssl rand -hex 32
-# опционально, чтобы не класть открытый токен в файл:
-printf %s '<токен>' | sha256sum | awk '{print $1}'
+set +o history
+command -v jq >/dev/null || apt-get install -y jq
+
+CLIENT=mosgate
+TOKEN=$(openssl rand -hex 32)
+
+cp /etc/proxy_llm/clients.json /etc/proxy_llm/clients.json.bak.$(date +%F-%H%M%S)
+
+jq --arg id "$CLIENT" --arg t "$TOKEN" '.clients += [{
+  clientId: $id,
+  tokens: [$t],
+  defaultModel: "google/gemini-2.5-flash",
+  allowedModels: ["google/gemini-2.5-flash"],
+  maxConcurrency: 1,
+  maxPending: 2
+}]' /etc/proxy_llm/clients.json > /tmp/clients.new.json
+
+python3 -m json.tool /tmp/clients.new.json >/dev/null \
+  && install -o root -g proxy_llm -m 640 /tmp/clients.new.json /etc/proxy_llm/clients.json
+rm -f /tmp/clients.new.json
+
+echo "TOKEN $CLIENT: $TOKEN"
+unset TOKEN; set -o history
 ```
 
-### Шаг 2 — вписать клиента в `/etc/proxy_llm/clients.json`
+Чтобы открытый токен вообще не лежал на диске — класть только хэш:
 
-```json
-{
-  "clientId": "estimat",
-  "tokens": ["<токен из openssl>"],
-  "allowedModels": ["google/gemini-2.5-flash", "anthropic/claude-sonnet-5"],
-  "defaultModel": "google/gemini-2.5-flash",
-  "maxConcurrency": 2,
-  "maxPending": 2
-}
+```bash
+set +o history
+TOKEN=$(openssl rand -hex 32)
+HASH=$(printf %s "$TOKEN" | sha256sum | awk '{print $1}')
+
+jq --arg id "beta" --arg h "$HASH" '.clients += [{
+  clientId: $id, tokenSha256: [$h], maxConcurrency: 1, maxPending: 2
+}]' /etc/proxy_llm/clients.json > /tmp/c.json \
+  && install -o root -g proxy_llm -m 640 /tmp/c.json /etc/proxy_llm/clients.json && rm /tmp/c.json
+
+echo "TOKEN beta (больше нигде не хранится): $TOKEN"
+unset TOKEN HASH; set -o history
 ```
 
-Вместо `tokens` можно указать `"tokenSha256": ["<хэш>"]` — тогда открытого токена в файле не будет.
+### Шаг 2 — поля клиента
 
 | Поле | Обяз. | Смысл |
 |---|---|---|
@@ -171,13 +218,36 @@ curl -sS https://proxy.example.com/api/v1/chat/completions \
 
 ## 5. Ротация и отзыв токена
 
-`tokens` — массив, поэтому ротация возможна без окна отказов:
+`tokens` — массив, поэтому ротация возможна без окна отказов: какое-то время валидны оба токена.
 
-1. добавить в массив второй токен → `systemctl restart proxy_llm`;
-2. дождаться, пока клиент переключится;
-3. удалить старый токен → `systemctl restart proxy_llm`.
+```bash
+# 1) добавить новый рядом со старым
+set +o history
+NEW=$(openssl rand -hex 32)
+jq --arg id estimat --arg t "$NEW" '(.clients[] | select(.clientId==$id) | .tokens) += [$t]' \
+  /etc/proxy_llm/clients.json > /tmp/c.json \
+  && install -o root -g proxy_llm -m 640 /tmp/c.json /etc/proxy_llm/clients.json && rm /tmp/c.json
+systemctl restart proxy_llm
+echo "новый токен estimat: $NEW"; unset NEW; set -o history
 
-Отзыв доступа — удалить запись клиента (или его токен) из файла и рестартнуть. Ротация legacy-токена `PROXY_INBOUND_TOKEN` — только с окном 401-ошибок, см. `docs/operator-guide.md` 5.4.
+# 2) когда клиент переключился — убрать старый
+jq --arg id estimat --arg old '<старый токен>' \
+  '(.clients[] | select(.clientId==$id) | .tokens) |= map(select(. != $old))' \
+  /etc/proxy_llm/clients.json > /tmp/c.json \
+  && install -o root -g proxy_llm -m 640 /tmp/c.json /etc/proxy_llm/clients.json && rm /tmp/c.json
+systemctl restart proxy_llm
+```
+
+Отзыв клиента целиком:
+
+```bash
+jq --arg id estimat '.clients |= map(select(.clientId != $id))' \
+  /etc/proxy_llm/clients.json > /tmp/c.json \
+  && install -o root -g proxy_llm -m 640 /tmp/c.json /etc/proxy_llm/clients.json && rm /tmp/c.json
+systemctl restart proxy_llm
+```
+
+Ротация legacy-токена `PROXY_INBOUND_TOKEN` — только с окном 401-ошибок, см. `docs/operator-guide.md` 5.4.
 
 ---
 
