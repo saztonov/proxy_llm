@@ -47,6 +47,7 @@ npm start           # node dist/server.js
 
 - **[docs/operator-guide.md](docs/operator-guide.md)** — полное руководство админа: подготовка VPS, развёртывание с нуля, генерация и передача токена в PassDesk, проверка end-to-end, эксплуатация, ротация секретов. Начинать с него.
 - [deploy/INSTALL.md](deploy/INSTALL.md) — более компактный справочник команд.
+- [docs/vps-update.md](docs/vps-update.md) — чек-лист обновления уже работающего VPS и подключения нового потребителя (токены, лимиты, модели).
 
 ### Миграция PassDesk
 
@@ -104,6 +105,8 @@ proxy_llm/
 │   └── INSTALL.md                пошаговое развёртывание
 ├── docs/
 │   ├── architecture.md
+│   ├── operator-guide.md
+│   ├── vps-update.md              обновление VPS + онбординг клиента
 │   ├── passdesk-migration.md
 │   ├── passdesk-agent-prompt.md
 │   ├── runbook.md
