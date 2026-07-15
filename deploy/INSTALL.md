@@ -16,6 +16,10 @@
 # [ROOT]
 ss -tlnp | grep ':3000'   # если порт занят — выбрать другой и заменить в .env + nginx
 node --version            # должна быть v22.x; если нет — см. шаг 1
+
+# sqlite3 CLI нужен скриптам backup-db.sh и wal-checkpoint.sh (иначе cron-бэкап
+# падает молча, и это обнаруживается только когда бэкап понадобился)
+apt-get install -y sqlite3
 ```
 
 ---
@@ -47,6 +51,17 @@ mv /opt/node-v${NODE_VER}-linux-x64 /opt/node-v22
 chown -R root:root /opt/node-v22
 chmod -R go-w /opt/node-v22
 # Не забыть: в proxy_llm.service заменить /usr/bin/node на /opt/node-v22/bin/node
+```
+
+⚠️ При этом варианте системная `node` в `PATH` — другой версии, а `npm ci` собирает
+нативный `better-sqlite3` под ту Node, что нашёл в `PATH`. Соберёте системной — сервис
+не стартует: `NODE_MODULE_VERSION ... requires 127`, `ERR_DLOPEN_FAILED`. Перед каждой
+сборкой (и при установке, и при обновлении):
+
+```bash
+export PATH=/opt/node-v22/bin:$PATH
+hash -r
+node -v && npm -v        # v22.x; warning EBADENGINE в npm ci = PATH не тот
 ```
 
 ### Вариант C — nvm под proxy_llm (last resort)
@@ -243,11 +258,19 @@ curl -sS https://proxy.example.com/healthz
 
 ```bash
 # [ROOT]
+ls -l /opt/proxy_llm/scripts/*.sh          # нужен бит +x; если нет — chmod +x /opt/proxy_llm/scripts/*.sh
+
 crontab -u proxy_llm -e
 # добавить:
 0 3 * * * /opt/proxy_llm/scripts/backup-db.sh
 30 3 * * 0 /opt/proxy_llm/scripts/wal-checkpoint.sh
 0 4 * * 0 /opt/proxy_llm/scripts/rotate-logs.sh
+```
+
+Сразу проверить, что бэкап реально отрабатывает, — cron о своих ошибках не сообщит:
+
+```bash
+sudo -u proxy_llm /opt/proxy_llm/scripts/backup-db.sh && ls -la /var/lib/proxy_llm/backups/
 ```
 
 ---

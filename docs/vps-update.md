@@ -13,11 +13,26 @@
 
 Node слушает только `127.0.0.1:3000`, наружу — через nginx. Логи только в journald: `journalctl -u proxy_llm -f`.
 
+## 0. Собирать той же Node, что запускает сервис
+
+На VPS может стоять несколько Node: системная в `/usr/bin/node` (для соседних сервисов) и отдельная в `/opt/node-v22/` — прокси запускается именно той, что указана в `ExecStart` юнита. `npm ci` берёт Node из `PATH`, а не из юнита, и если это разные версии, то `better-sqlite3` (нативный модуль) соберётся под чужой ABI. Сервис уйдёт в краш-луп с `NODE_MODULE_VERSION 115 ... requires 127` и `ERR_DLOPEN_FAILED`.
+
+Поэтому **перед любой сборкой**:
+
+```bash
+grep ExecStart /etc/systemd/system/proxy_llm.service   # напр. /opt/node-v22/bin/node
+export PATH=/opt/node-v22/bin:$PATH                    # каталог bin из ExecStart
+hash -r
+node -v && npm -v                                      # обязана быть v22.x
+```
+
+Признак ошибки — `npm warn EBADENGINE ... current: { node: 'v20.x' }` в выводе `npm ci`. Увидели его — остановитесь и поправьте `PATH`, иначе получите лежащий сервис.
+
 ---
 
 ## 1. Обновление кода
 
-Всё от `root`.
+Всё от `root`, после шага 0.
 
 ```bash
 # --- Бэкап перед обновлением ---
@@ -33,10 +48,11 @@ git log HEAD..origin/main --oneline    # посмотреть, что приед
 git checkout main
 git pull --ff-only origin main
 
-# --- Сборка ---
+# --- Сборка (PATH уже указывает на Node из ExecStart, см. шаг 0) ---
 npm ci                                 # именно ci, с devDeps: без tsc не соберётся dist/
 npm run build
 npm prune --omit=dev
+node -e "require('better-sqlite3')" && echo "нативный модуль под $(node -v): OK"
 ls -la dist/server.js dist/views/dashboard.eta   # оба должны существовать
 
 # --- Права ---
@@ -48,9 +64,10 @@ systemctl restart proxy_llm
 systemctl status proxy_llm --no-pager
 journalctl -u proxy_llm -n 50 --no-pager --since '1 min ago'
 
-# --- Проверка ---
+# --- Проверка (sleep: сразу после старта порт ещё не забинден) ---
+sleep 3
 curl -sS http://127.0.0.1:3000/healthz     # {"status":"ok"}
-curl -sS http://127.0.0.1:3000/readyz
+curl -sS http://127.0.0.1:3000/readyz      # {"ready":true,"checks":{"db":"ok","dns":"ok"}}
 ```
 
 Отдельного шага миграций нет — `openDb()` применяет их идемпотентно при каждом старте.
@@ -60,13 +77,30 @@ curl -sS http://127.0.0.1:3000/readyz
 
 ```bash
 cd /opt/proxy_llm
+export PATH=/opt/node-v22/bin:$PATH        # см. шаг 0
 git checkout $(cat /root/proxy_llm-prev-commit)
 npm ci && npm run build && npm prune --omit=dev
 systemctl restart proxy_llm
-curl -sS http://127.0.0.1:3000/healthz
+sleep 3 && curl -sS http://127.0.0.1:3000/healthz
 ```
 
+Если сервис в краш-лупе, `systemctl restart` бесполезен, пока не устранена причина: сначала `systemctl stop proxy_llm`, потом чинить, потом `systemctl reset-failed proxy_llm && systemctl start proxy_llm`. Читать `journalctl -u proxy_llm -n 50 --no-pager` — там причина падения, а не в `systemctl status`.
+
 Восстановление БД из бэкапа — `docs/operator-guide.md`, раздел 5.5.
+
+## 2a. Проверка, что бэкапы вообще идут
+
+Cron пишет ошибки в почту, которую никто не читает, поэтому молчание крона ≠ рабочий бэкап. Проверять глазами:
+
+```bash
+ls -la /var/lib/proxy_llm/backups/          # должны быть свежие prod.db.*.gz
+sudo -u proxy_llm /opt/proxy_llm/scripts/backup-db.sh && echo "backup OK"
+```
+
+Две причины, по которым бэкап молча не делается:
+
+- `command not found` при запуске скрипта — слетел бит `+x`: `chmod +x /opt/proxy_llm/scripts/*.sh`;
+- `sqlite3: command not found` внутри скрипта — CLI не установлен, хотя `backup-db.sh` и `wal-checkpoint.sh` его требуют: `command -v sqlite3 || apt-get install -y sqlite3`.
 
 ---
 
