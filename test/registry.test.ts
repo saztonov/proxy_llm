@@ -29,8 +29,38 @@ describe('ClientRegistry', () => {
     const reg = loadClientRegistry(config);
     const c = reg.resolveToken('legacy-token-1234567890');
     expect(c?.clientId).toBe('passdesk');
-    expect(c?.allowedModels).toEqual([]); // legacy форсит дефолт-модель
+    expect(c?.allowedModels).toEqual([]); // наследует CLIENT_DEFAULT_ALLOWED_MODELS (в тест-конфиге пусто)
     expect(reg.resolveToken('nope-nope-nope-1234')).toBeNull();
+  });
+
+  it('legacy client inherits CLIENT_DEFAULT_ALLOWED_MODELS, same as a file-defined one', () => {
+    const config = makeTestConfig({
+      PROXY_INBOUND_TOKEN: 'legacy-token-1234567890',
+      CLIENTS_CONFIG_PATH: undefined,
+      CLIENT_DEFAULT_ALLOWED_MODELS: ['*'],
+    });
+    const reg = loadClientRegistry(config);
+    expect(reg.resolveToken('legacy-token-1234567890')?.allowedModels).toEqual(['*']);
+  });
+
+  // Рычаг обратной совместимости: единственный способ оператора удержать недоработанного
+  // клиента на дефолт-модели, когда выбор включён глобально. `[] ?? x` даёт `[]`.
+  it('explicit empty allowedModels overrides a global wildcard default', () => {
+    const path = writeClients({
+      clients: [{ clientId: 'passdesk', tokens: ['pinned-token-1234567890'], allowedModels: [] }],
+    });
+    const config = makeTestConfig({ CLIENTS_CONFIG_PATH: path, CLIENT_DEFAULT_ALLOWED_MODELS: ['*'] });
+    const reg = loadClientRegistry(config);
+    expect(reg.resolveToken('pinned-token-1234567890')?.allowedModels).toEqual([]);
+  });
+
+  it('omitted allowedModels inherits the global wildcard default', () => {
+    const path = writeClients({
+      clients: [{ clientId: 'labs', tokens: ['labs-token-1234567890'] }],
+    });
+    const config = makeTestConfig({ CLIENTS_CONFIG_PATH: path, CLIENT_DEFAULT_ALLOWED_MODELS: ['*'] });
+    const reg = loadClientRegistry(config);
+    expect(reg.resolveToken('labs-token-1234567890')?.allowedModels).toEqual(['*']);
   });
 
   it('explicit path but missing file → fail-fast', () => {
@@ -93,8 +123,17 @@ describe('ClientRegistry', () => {
       });
       const config = makeTestConfig({ CLIENTS_CONFIG_PATH: writeClients(t) });
       const reg = loadClientRegistry(config);
-      expect(reg.clients().map((c) => c.clientId).sort()).toEqual(['estimat', 'mosgate', 'passdesk']);
+      expect(reg.clients().map((c) => c.clientId).sort()).toEqual(['estimat', 'labs', 'mosgate', 'passdesk']);
       expect(reg.resolveToken('example-token-1-1234567890')?.clientId).toBe('estimat');
+    });
+
+    // Шаблон демонстрирует политику моделей: passdesk закреплён на дефолте (митигация из
+    // vps-update.md §4a), labs — wildcard со своим ключом OpenRouter.
+    it('архетипы моделей в шаблоне: пин у passdesk, wildcard у labs', () => {
+      const byId = Object.fromEntries(template().clients.map((c) => [c.clientId as string, c]));
+      expect(byId['passdesk']?.allowedModels).toEqual([]);
+      expect(byId['labs']?.allowedModels).toEqual(['*']);
+      expect(byId['labs']?.openrouterApiKey).toBeDefined();
     });
   });
 

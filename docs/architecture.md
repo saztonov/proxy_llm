@@ -7,9 +7,9 @@ OpenAI-совместимый HTTP-прокси между PassDesk и OpenRoute
 ## Что прокси делает (и чего НЕ делает)
 
 **Делает:**
-- Принимает `POST /api/v1/chat/completions` от PassDesk с `Authorization: Bearer <PROXY_INBOUND_TOKEN>`.
+- Принимает `POST /api/v1/chat/completions` от клиента с `Authorization: Bearer <токен клиента>`; токен резолвится в `clientId` через реестр `clients.json`.
 - Валидирует payload (zod), запрещает `stream:true`, очищает denylist полей.
-- Подставляет `model` / `models` из env прокси, не из клиента.
+- Резолвит `model` / `models` по политике клиента: `allowedModels` пуст → форс `defaultModel` (клиентский `model` игнорируется); список или `["*"]` → выбор клиента, модель вне списка → 400 `model_not_allowed`; заглушки `proxy`/`default`/`auto` = «не выбрано». Явный выбор отключает fallback-цепочку. Клиентский `models[]` вырезается всегда.
 - Отправляет в OpenRouter с настоящим `OPENROUTER_API_KEY`.
 - Ретраит retryable-ошибки внутри общего deadline.
 - Пишет метаданные каждой попытки в SQLite (без тел запроса/ответа).
@@ -21,29 +21,33 @@ OpenAI-совместимый HTTP-прокси между PassDesk и OpenRoute
 - НЕ хранит сканы паспортов или другие PII в SQLite.
 - НЕ делает cold-replay после крэша.
 - НЕ поддерживает streaming.
-- НЕ доверяет клиенту в части routing/провайдер-настроек.
+- НЕ доверяет клиенту в части `provider` / `route` / `transforms` / `plugins` / `models[]` (denylist). Выбор **модели** — отдельный случай: он может быть делегирован клиенту через `allowedModels`, это решение оператора.
+- НЕ проверяет существование модели: опечатка в слаге вскроется только ошибкой от OpenRouter.
 
 ## Поток одного запроса
 
 ```
-PassDesk BullMQ retry attempt
-     │ HTTPS, Bearer PROXY_INBOUND_TOKEN, X-Request-Id, X-Idempotency-Key
+Клиент (напр. PassDesk BullMQ retry attempt)
+     │ HTTPS, Bearer <токен клиента>, X-Request-Id, X-Idempotency-Key
      ▼
-nginx (TLS, IP-allowlist PassDesk, limit_conn=3, limit_req=60/min)
+nginx (TLS, IP-allowlist клиентов, limit_conn=3, limit_req=60/min)
      │ proxy_pass 127.0.0.1:3000
      ▼
 Fastify onRequest hook (admission control ДО парсинга body)
-     │ Bearer check / Content-Length check / queue depth check
+     │ Bearer check (→ clientId) / Content-Length check / queue depth check
      │ если перегружены — 503 СРАЗУ, body не читается
      ▼
 Fastify body parsing + zod validation
      │ stream:true → 400; messages пустой → 400
      ▼
-Active dedup (Map<X-Idempotency-Key, Promise<ProxyResult>>)
-     │ hard cap 1000, без LRU eviction
-     │ если ключ уже активен — await тот же promise (один upstream вызов на два клиента)
+resolveModel: политика клиента (allowedModels)
+     │ модель вне списка → 400 model_not_allowed, до OpenRouter не доходит
      ▼
-p-queue semaphore (concurrency=1 для MVP)
+Active dedup (Map<clientId:X-Idempotency-Key, Promise<ProxyResult>>)
+     │ hard cap 1000, без LRU eviction; ключ скоупится по клиенту
+     │ если ключ уже активен — await тот же promise (один upstream вызов на два запроса)
+     ▼
+Пер-клиентская очередь (maxConcurrency) → глобальный семафор (QUEUE_CONCURRENCY)
      │
      ▼
 Цикл попыток с REQUEST_DEADLINE_MS
@@ -62,9 +66,10 @@ Response клиенту (whitelist headers: content-type, X-Proxy-Request-Id, X-
 
 | Где | Переменная | Значение | Кто видит |
 |---|---|---|---|
-| Прокси `/etc/proxy_llm/.env` | `OPENROUTER_API_KEY` | настоящий ключ OpenRouter | root + proxy_llm |
-| Прокси `/etc/proxy_llm/.env` | `PROXY_INBOUND_TOKEN` | `openssl rand -hex 32` | root + админ PassDesk |
-| PassDesk `.env` | `OCR_API_KEY` | значение `PROXY_INBOUND_TOKEN` | админ PassDesk |
+| Прокси `/etc/proxy_llm/.env` | `OPENROUTER_API_KEY` | настоящий ключ OpenRouter (общий, если у клиента нет своего) | root + proxy_llm |
+| Прокси `/etc/proxy_llm/clients.json` | `tokens[]` / `tokenSha256[]` | пер-клиентские токены; опц. `openrouterApiKey` для биллинговой изоляции | root + proxy_llm |
+| Прокси `/etc/proxy_llm/.env` | `PROXY_INBOUND_TOKEN` | `openssl rand -hex 32`; legacy-токен, всегда резолвится в клиента `passdesk` | root + админ PassDesk |
+| PassDesk `.env` | `OCR_API_KEY` | токен клиента `passdesk` | админ PassDesk |
 | Прокси `/etc/proxy_llm/.env` | `DASHBOARD_BASIC_AUTH_PASS` | сильный пароль | root + админ |
 
 - `PROXY_INBOUND_TOKEN` НИКОГДА не уходит в OpenRouter (прокси перезаписывает Authorization).
@@ -113,10 +118,12 @@ Response клиенту (whitelist headers: content-type, X-Proxy-Request-Id, X-
 Единственная таблица `requests`. Хранит:
 - `request_id` (per attempt), `idempotency_key` (per OCR-job), `upstream_id` (OpenRouter `gen-…`);
 - timestamps, latency, размеры запроса/ответа;
-- `model_used`, `fallback_used` (best-effort: 1/0/null);
+- `model_used`, `fallback_used` (best-effort: 1/0/null; при явном выборе модели цепочки нет, поэтому `null` встречается чаще);
 - статус, http_status, attempt_count;
 - `error_code`, `error_msg` (truncate 500, sanitized);
-- `client_ip`.
+- `client_ip`, `source`, `client_id` (миграция `002_add_client_id.sql`).
+
+Что клиент **прислал** в поле `model`, журнал не хранит — только `model_used` (что отработало).
 
 WAL-mode, `busy_timeout=5000`. Еженедельный `wal_checkpoint(TRUNCATE)` через cron.
 

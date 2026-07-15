@@ -211,9 +211,9 @@ unset TOKEN HASH; set -o history
 |---|---|---|
 | `clientId` | да | уникальный id для журнала, лимитов, алертов |
 | `tokens[]` / `tokenSha256[]` | нужен ≥1 | открытые токены (≥16 символов) либо их sha256 в hex |
-| `defaultModel` | нет | модель, если клиент не прислал `model`; иначе глобальная `OPENROUTER_MODEL` |
-| `allowedModels[]` | нет | белый список. Пусто = клиент **не выбирает** модель (форс `defaultModel`), а не «всё разрешено» |
-| `fallbackModels[]` | нет | fallback OpenRouter |
+| `defaultModel` | нет | модель, если клиент не прислал `model` **или прислал заглушку** `proxy`/`default`/`auto`; иначе глобальная `OPENROUTER_MODEL` |
+| `allowedModels[]` | нет | белый список: **`[]`** = клиент **не выбирает** модель (форс `defaultModel`), а не «всё разрешено»; **`["*"]`** = любая модель OpenRouter; **список** = только эти. Поле **не задано** → наследует `CLIENT_DEFAULT_ALLOWED_MODELS` из `.env`; явный `[]` этот дефолт **перебивает** (см. §4a) |
+| `fallbackModels[]` | нет | цепочка `models[]` для OpenRouter. Применяется, **только когда модель не выбрана явно** (заглушка / нет `model` / пустой allowlist); явный выбор её отключает |
 | `maxConcurrency` | нет | 1..20, одновременных upstream-вызовов |
 | `maxPending` | нет | 1..1000, очередь сверх `maxConcurrency` |
 | `openrouterApiKey` | нет | свой ключ OpenRouter клиента (биллинговая изоляция) |
@@ -246,7 +246,96 @@ curl -sS https://proxy.example.com/api/v1/chat/completions \
 ```
 
 Ожидаемо 200. Затем запись с нужным `client_id` появится в `/dashboard`.
-Битый токен → 401 `invalid bearer token`; модель вне `allowedModels` → 400 `model_not_allowed`.
+Битый токен → 401 `invalid bearer token`; модель вне `allowedModels` → 400 `model_not_allowed`
+(при `allowedModels: ["*"]` этой ошибки не бывает никогда). Запрос с `{"model":"proxy"}` →
+200 с дефолтной моделью клиента: заглушка в роутинг не уходит.
+
+---
+
+## 4a. Включение выбора модели клиентом
+
+По умолчанию клиент модель не выбирает: присланный `model` игнорируется, всегда идёт
+`defaultModel` + `fallbackModels`. Чтобы разрешить выбор, нужны **два независимых шага**:
+клиента дорабатывают (он начинает слать осмысленный `model`), а оператор открывает ему
+`allowedModels`. Порядок между ними неважен — важно не открывать выбор тем, кто не доработан.
+
+### Почему нельзя просто включить всем
+
+Клиенты **уже** шлют поле `model`, просто оно игнорируется, и они на это опираются:
+
+- подключённые по скиллу (`fot`, `matcheck`, `estimat`) шлют заглушку `"proxy"` — **безопасны**,
+  заглушка и после включения означает «модель не выбираю»;
+- **PassDesk шлёт реальное имя модели** из своего env `OCR_OPENROUTER_MODEL` — **ломается**.
+
+Запрос старого клиента байт-в-байт неотличим от осознанного выбора нового, поэтому у PassDesk
+при включении **молча**:
+
+1. уедут роутинг и биллинг на то, что записано в env PassDesk, а не в `defaultModel`;
+2. **отключится fallback-цепочка** — явный выбор уходит одиночным `model` без `models[]`:
+   при недоступности провайдера будет ошибка вместо переезда на резервную модель.
+
+Заглушка от этого не спасает — она работает, только если клиент действительно её шлёт.
+
+**Где рвётся:** `allowedModels` клиента = `entry.allowedModels ?? CLIENT_DEFAULT_ALLOWED_MODELS`
+(`src/clients/registry.ts`). Значит `CLIENT_DEFAULT_ALLOWED_MODELS=*` включает выбор **всем**
+клиентам, у кого поле не задано явно. Единственный рычаг удержать клиента на старом поведении —
+явный `"allowedModels": []` в его записи: пустой массив не nullish, поэтому перебивает дефолт.
+
+### Порядок
+
+**1. Инвентаризация — кто что шлёт.**
+
+```bash
+jq -r '.clients[] | "\(.clientId)\tallowed=\(.allowedModels // "<наследует из .env>")"' \
+  /etc/proxy_llm/clients.json
+
+sqlite3 /var/lib/proxy_llm/prod.db \
+  "select client_id, model_used, count(*) from requests
+   where ts_received > (strftime('%s','now')-86400)*1000 group by 1,2;"
+```
+
+`model_used` показывает, что фактически отработало **сейчас**. Что клиент **присылает** в `model`,
+журнал не хранит — спрашивать у владельца сервиса (в скилле это шаг 1 раздела «Как начать
+выбирать модель»). Для PassDesk ответ известен: он шлёт `OCR_OPENROUTER_MODEL`.
+
+**2. Закрепить недоработанных клиентов** — всем, кто шлёт реальное имя модели и выбирать её пока
+не должен, проставить явный пустой список:
+
+```bash
+jq '(.clients[] | select(.clientId=="passdesk") | .allowedModels) = []' \
+  /etc/proxy_llm/clients.json > /tmp/c.json \
+  && install -o root -g proxy_llm -m 640 /tmp/c.json /etc/proxy_llm/clients.json && rm /tmp/c.json
+systemctl restart proxy_llm
+```
+
+**3. Открывать выбор точечно, по мере готовности клиента:**
+
+```bash
+jq '(.clients[] | select(.clientId=="estimat") | .allowedModels) = ["*"]' \
+  /etc/proxy_llm/clients.json > /tmp/c.json \
+  && install -o root -g proxy_llm -m 640 /tmp/c.json /etc/proxy_llm/clients.json && rm /tmp/c.json
+systemctl restart proxy_llm
+```
+
+Вместо `["*"]` можно дать список — тогда модель вне него отобьётся 400 `model_not_allowed`.
+
+**4. Wildcard-клиенту выдать свой `openrouterApiKey`** — иначе его эксперименты с дорогими
+моделями идут по общему бюджету. **Выбор модели = выбор биллинга.**
+
+**5. Глобальный `CLIENT_DEFAULT_ALLOWED_MODELS=*`** в `/etc/proxy_llm/.env` — только когда шаги
+2-3 пройдены для **всех** клиентов из `clients.json`. Это финальное состояние «выбор разрешён
+всем», а не первый шаг. После него можно снять пины у доработанных клиентов.
+
+**6. Пост-проверка через сутки:**
+
+```bash
+sqlite3 /var/lib/proxy_llm/prod.db \
+  "select client_id, model_used, count(*), sum(total_tokens) from requests
+   where ts_received > (strftime('%s','now')-86400)*1000 group by 1,2;"
+```
+
+Появились неожиданные `model_used` — значит у кого-то ожил `model` из его env. Заодно смотреть
+`fallback_used`: рост `null` у клиента, который начал выбирать модель, — ожидаемо (цепочки нет).
 
 ---
 
@@ -290,6 +379,8 @@ systemctl restart proxy_llm
 - **Rate limit и дневных квот на клиента нет.** Есть только лимит одновременности (`maxConcurrency` + `maxPending`) — это back-pressure, не throttling: клиент, шлющий запросы последовательно, по объёму ничем не ограничен. Ограничение частоты только глобальное, по IP, в nginx (`rate=60r/m`, `limit_conn 3`).
 - **IP-allowlist не пер-клиентский** — общий `allow` на `location /api/`. Привязки «токен X только с IP Y» нет: любой клиент из allowlist с валидным токеном пройдёт.
 - **Дайджест в Telegram — агрегат по всему прокси**, без разбивки по клиентам.
+- **Выбор модели = выбор биллинга.** `allowedModels: ["*"]` снимает контроль над роутингом: клиент вправе уехать на дорогую модель в пределах общего ключа OpenRouter. Wildcard-клиенту выдавать свой `openrouterApiKey` (см. §4a).
+- **Существование модели не проверяется.** Ни на старте, ни на запросе: опечатка в `defaultModel` или в присланном клиентом слаге проявится только как ошибка от OpenRouter.
 
 Пер-клиентская статистика:
 

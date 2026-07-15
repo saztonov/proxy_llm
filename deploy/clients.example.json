@@ -3,6 +3,7 @@
     {
       "clientId": "passdesk",
       "tokens": ["REPLACE_ME"],
+      "allowedModels": [],
       "maxConcurrency": 2,
       "maxPending": 4
     },
@@ -12,6 +13,15 @@
       "allowedModels": ["google/gemini-2.5-flash", "anthropic/claude-sonnet-5"],
       "defaultModel": "google/gemini-2.5-flash",
       "maxConcurrency": 2,
+      "maxPending": 2
+    },
+    {
+      "clientId": "labs",
+      "tokens": ["REPLACE_ME"],
+      "allowedModels": ["*"],
+      "defaultModel": "google/gemini-2.5-flash",
+      "openrouterApiKey": "sk-or-v1-REPLACE_ME",
+      "maxConcurrency": 1,
       "maxPending": 2
     },
     {

@@ -13,7 +13,7 @@ PassDesk-сторона меняется минимально: две env-пер
 
 ## Архитектурный принцип
 
-Прокси **не очередь**. Source of truth для OCR-задачи остаётся в PassDesk BullMQ. Прокси отвечает только за один HTTP-вызов в OpenRouter: валидацию, model override, retry с deadline, журнал, алерты.
+Прокси **не очередь**. Source of truth для OCR-задачи остаётся в PassDesk BullMQ. Прокси отвечает только за один HTTP-вызов в OpenRouter: валидацию, резолв модели по политике клиента, retry с deadline, журнал, алерты.
 
 См. [docs/architecture.md](docs/architecture.md).
 
@@ -58,7 +58,8 @@ npm start           # node dist/server.js
 ## Что прокси гарантирует
 
 - **`stream:true` запрещён** (400) — упрощает retry/timeout/journal.
-- **`model` всегда из env прокси**, не из клиентского payload. Клиентский `model` молча удаляется. Аналогично — `provider`, `route`, `transforms`, `plugins`, `stream_options`, `debug`.
+- **`model` — по политике клиента** из `clients.json`. `allowedModels` пуст → клиентский `model` игнорируется, идёт `defaultModel` клиента + его fallback-цепочка (поведение по умолчанию). Список или `["*"]` → клиент выбирает сам; модель вне списка → 400 `model_not_allowed`. Явный выбор **отключает** fallback-цепочку. Заглушки `proxy`/`default`/`auto` в поле `model` = «модель не выбрана» → дефолт клиента. Подробнее — [docs/vps-update.md](docs/vps-update.md) §4a.
+- **Всегда молча удаляются** из payload: `models` (свою fallback-цепочку прислать нельзя), `provider`, `route`, `transforms`, `plugins`, `stream_options`, `debug`.
 - **HTTP 200 ≠ success автоматически.** Если в JSON-теле есть `error` или пустые `choices` — это `body_level_error` / `malformed_success` в журнале.
 - **Idempotency** через `X-Idempotency-Key`: параллельные запросы с одним ключом получают один upstream-вызов. Hard cap (1000 активных ключей), без LRU eviction.
 - **Общий deadline** `REQUEST_DEADLINE_MS=190s` покрывает все попытки + backoff. nginx `proxy_read_timeout=220s` — 504 формирует прокси, не nginx.

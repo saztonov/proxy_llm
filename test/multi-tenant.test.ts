@@ -8,6 +8,7 @@ import { startMockOpenRouter, jsonResponse, chatSuccessBody, type MockServer } f
 
 const ALPHA = 'alpha-token-1234567890';
 const BETA = 'beta-token-1234567890';
+const GAMMA = 'gamma-token-1234567890';
 
 describe('multi-tenant proxy', () => {
   let bundle: AppBundle;
@@ -31,6 +32,15 @@ describe('multi-tenant proxy', () => {
             maxPending: 1,
           },
           { clientId: 'beta', tokens: [BETA], defaultModel: 'beta/default', maxConcurrency: 1, maxPending: 8 },
+          {
+            clientId: 'gamma',
+            tokens: [GAMMA],
+            defaultModel: 'gamma/default',
+            allowedModels: ['*'],
+            fallbackModels: ['gamma/fb'],
+            maxConcurrency: 1,
+            maxPending: 8,
+          },
         ],
       }),
       'utf8',
@@ -99,6 +109,40 @@ describe('multi-tenant proxy', () => {
   it('unknown token → 401', async () => {
     const res = await post('nope-nope-nope-000000', { messages: [{ role: 'user', content: 'hi' }] });
     expect(res.statusCode).toBe(401);
+  });
+
+  it('wildcard client → any model reaches upstream, without a fallback chain', async () => {
+    const before = upstream.requests.length;
+    const res = await post(GAMMA, { model: 'any/model', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(upstream.requests[before]!.body);
+    expect(body.model).toBe('any/model');
+    expect(body.models).toBeUndefined();
+  });
+
+  // Заглушка не должна долетать до OpenRouter даже там, где разрешено всё.
+  it('wildcard client → sentinel resolves to default + fallback chain', async () => {
+    const before = upstream.requests.length;
+    const res = await post(GAMMA, { model: 'proxy', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(upstream.requests[before]!.body);
+    expect(body.models).toEqual(['gamma/default', 'gamma/fb']);
+    expect(body.model).toBeUndefined();
+  });
+
+  it('sentinel under an explicit allowlist → 200 with default, not model_not_allowed', async () => {
+    const before = upstream.requests.length;
+    const res = await post(ALPHA, { model: 'proxy', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(upstream.requests[before]!.body).model).toBe('alpha/default');
+  });
+
+  // Обратная совместимость: beta (пустой allowlist) шлёт реальный слаг «по-старому».
+  it('empty allowlist still ignores a real slug → client default', async () => {
+    const before = upstream.requests.length;
+    const res = await post(BETA, { model: 'expensive/model', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(upstream.requests[before]!.body).model).toBe('beta/default');
   });
 
   it('same idempotency key from two different tenants → two upstream calls (no cross-client merge)', async () => {

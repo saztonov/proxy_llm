@@ -8,9 +8,12 @@ export const DEFAULT_CLIENTS_PATH = '/etc/proxy_llm/clients.json';
 /** Резолвнутая рантайм-конфигурация клиента (все дефолты подставлены). */
 export interface ClientConfig {
   clientId: string;
-  /** Модель по умолчанию, если клиент не прислал `model` (или его allowlist пуст). */
+  /** Модель по умолчанию: клиент не прислал `model`, прислал заглушку или его allowlist пуст. */
   defaultModel: string;
-  /** Пустой массив = клиент НЕ может выбирать модель (форс defaultModel), legacy-поведение. */
+  /**
+   * Белый список моделей: пустой = клиент НЕ выбирает модель (форс defaultModel, legacy);
+   * `['*']` = любая модель OpenRouter; иначе — только перечисленные.
+   */
   allowedModels: string[];
   fallbackModels: string[];
   maxConcurrency: number;
@@ -59,6 +62,10 @@ function resolveEntry(entry: ClientEntry, config: Config): ClientConfig {
   return {
     clientId: entry.clientId,
     defaultModel: entry.defaultModel ?? config.OPENROUTER_MODEL,
+    // `[] ?? x` даёт `[]` — пустой массив не nullish. Т.е. явный "allowedModels": [] в файле
+    // перебивает глобальный CLIENT_DEFAULT_ALLOWED_MODELS и форсит дефолт-модель. Это
+    // единственный рычаг оператора удержать недоработанного клиента на старом поведении,
+    // когда выбор модели включён глобально.
     allowedModels: entry.allowedModels ?? config.CLIENT_DEFAULT_ALLOWED_MODELS,
     fallbackModels: entry.fallbackModels ?? config.OPENROUTER_FALLBACK_MODELS,
     maxConcurrency: entry.maxConcurrency ?? config.CLIENT_DEFAULT_MAX_CONCURRENCY,
@@ -80,7 +87,9 @@ function legacyClient(config: Config): ClientConfig {
   return {
     clientId: 'passdesk',
     defaultModel: config.OPENROUTER_MODEL,
-    allowedModels: [], // форс дефолт-модели — ровно как сегодня
+    // Тот же дефолт, что и у клиентов из файла: иначе passdesk вёл бы себя по-разному в
+    // зависимости от того, описан он в clients.json или нет.
+    allowedModels: config.CLIENT_DEFAULT_ALLOWED_MODELS,
     fallbackModels: config.OPENROUTER_FALLBACK_MODELS,
     maxConcurrency: config.CLIENT_DEFAULT_MAX_CONCURRENCY,
     maxPending: config.CLIENT_DEFAULT_MAX_PENDING,

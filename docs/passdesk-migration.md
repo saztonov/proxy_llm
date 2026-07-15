@@ -12,7 +12,9 @@
 
 ### 1. Получить токен прокси
 
-Администратор VPS (где живёт `proxy_llm`) даёт значение `PROXY_INBOUND_TOKEN`. Это случайный 32-байт hex, сгенерированный при установке прокси.
+Администратор VPS (где живёт `proxy_llm`) даёт токен клиента `passdesk` — случайный 32-байт hex из реестра `/etc/proxy_llm/clients.json`. Если реестр ещё не включён (single-tenant legacy), это значение `PROXY_INBOUND_TOKEN` из `.env` прокси: оно всегда резолвится в клиента `passdesk`.
+
+Заодно спросить у оператора **политику моделей** для `passdesk`: дефолтную модель и `allowedModels` (пусто = выбор запрещён / список / `*`). От этого зависит судьба `OCR_OPENROUTER_MODEL` — см. шаг 2.
 
 ### 2. Заменить переменные окружения PassDesk
 
@@ -25,13 +27,27 @@
 
 # СТАЛО:
 OCR_OPENROUTER_ENDPOINT=https://proxy.example.com/api/v1/chat/completions
-OCR_API_KEY=<значение PROXY_INBOUND_TOKEN>
+OCR_API_KEY=<токен клиента passdesk>
 OCR_IDEMPOTENCY_VERSION=v1
 ```
 
 После замены настоящего OpenRouter-ключа в PassDesk быть не должно. Удалить из всех .env, файлов CI, secret-стораджа.
 
-`OCR_OPENROUTER_MODEL` и `OCR_FALLBACK_MODEL` можно оставить — прокси их игнорирует, но переменные читаются текущим `getOcrConfig()`.
+`OCR_OPENROUTER_MODEL` и `OCR_FALLBACK_MODEL` формально можно оставить — их читает `getOcrConfig()`.
+
+⚠️ Но **`OCR_OPENROUTER_MODEL` уходит в прокси в поле `model` payload'а.** Сегодня прокси его игнорирует (у клиента `passdesk` пустой `allowedModels`), и это **не гарантия, а настройка**: как только оператор разрешит `passdesk` выбор модели (его `allowedModels` или глобальный `CLIENT_DEFAULT_ALLOWED_MODELS=*`), значение из env PassDesk **оживёт и молча**:
+
+- уведёт роутинг и биллинг на модель из env PassDesk, а не на `defaultModel` из `clients.json`;
+- **отключит fallback-цепочку** — явный выбор уходит одиночным `model`, без `models[]`: при недоступности провайдера будет ошибка вместо переезда на резервную модель.
+
+Два пути, выбрать один:
+
+1. **Остаться на модели прокси (рекомендуется, если выбор не нужен):** `OCR_OPENROUTER_MODEL=proxy`. Заглушки `proxy`/`default`/`auto` означают «модель не выбираю» → дефолт клиента + fallback. Тогда включение выбора на прокси PassDesk уже не заденет.
+2. **Выбирать модель осознанно:** оставить реальный слаг, но помнить, что fallback отключится, и обрабатывать `400 model_not_allowed`. Рецепт — §8 скилла `.claude/skills/connect-proxy-llm/`.
+
+Пока не сделано ни то, ни другое, PassDesk держится на том, что выбор модели ему не включили. Оператору — чек-лист `docs/vps-update.md` §4a.
+
+`OCR_FALLBACK_MODEL` прокси не использует вообще: fallback-цепочка задаётся на прокси (`fallbackModels`), клиентский `models[]` вырезается.
 
 ### 3. Добавить два заголовка в исходящий axios-запрос
 
@@ -87,11 +103,12 @@ pm2 reload passdesk     # или systemctl restart, как принято в Pas
 3. В дашборде прокси (`https://proxy.example.com/dashboard`, под Basic Auth) — должна появиться новая запись с тем же `X-Request-Id`.
 4. Искусственный retry: вернуть 503 от прокси (выключить → curl → включить), убедиться что PassDesk BullMQ повторяет с **тем же** `X-Idempotency-Key` и **новым** `X-Request-Id`.
 
-## Что прокси игнорирует / перезаписывает в payload
+## Что прокси вырезает и как решает про модель
 
 Прокси централизованно контролирует:
 
-- `model` / `models` — устанавливает свои из env `OPENROUTER_MODEL` (+ `OPENROUTER_FALLBACK_MODELS`).
+- `models` — **всегда** вырезается: свою fallback-цепочку прислать нельзя, её задаёт оператор (`fallbackModels`).
+- `model` — **не удаляется**, а резолвится по политике клиента `passdesk` в `clients.json`: при пустом `allowedModels` игнорируется и форсится `defaultModel` (+ fallback-цепочка); при непустом — уходит в роутинг как есть, и fallback отключается. Заглушки `proxy`/`default`/`auto` = «модель не выбираю» → `defaultModel`. См. предупреждение про `OCR_OPENROUTER_MODEL` выше.
 - `stream` — принудительно `false`.
 - `provider`, `route`, `transforms`, `plugins`, `stream_options`, `debug` — удаляются из payload (denylist).
 
