@@ -28,6 +28,7 @@ function installShutdownHandlers(drainMs: number, bundle: AppBundle): void {
 
     bundle.stopWatchdog();
     bundle.stopDigest();
+    bundle.stopFairnessReconciler();
 
     try {
       await bundle.app.close();

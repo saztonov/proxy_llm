@@ -7,6 +7,7 @@ import { OpenRouterClient } from './upstream/openrouter-client.js';
 import { ActiveRequests } from './dedup/active-requests.js';
 import { loadClientRegistry, type ClientRegistry } from './clients/registry.js';
 import { FairnessManager } from './concurrency/fairness.js';
+import { startFairnessReconciler } from './concurrency/reconcile.js';
 import { TelegramSender } from './alerts/telegram.js';
 import { AlertEngine } from './alerts/rules.js';
 import { startDailyDigest } from './alerts/digest.js';
@@ -28,6 +29,7 @@ export interface AppBundle {
   startupAlert: StartupAlert;
   stopWatchdog: () => void;
   stopDigest: () => void;
+  stopFairnessReconciler: () => void;
 }
 
 export async function buildApp(config: Config): Promise<AppBundle> {
@@ -69,6 +71,7 @@ export async function buildApp(config: Config): Promise<AppBundle> {
   );
 
   const stopDigest = startDailyDigest(alerts, logger);
+  const stopFairnessReconciler = startFairnessReconciler(fairness, activeMetrics, logger);
 
   const app = Fastify({
     logger: false,
@@ -107,5 +110,17 @@ export async function buildApp(config: Config): Promise<AppBundle> {
   });
   await registerDashboard(app, { config, repo, activeMetrics });
 
-  return { app, db, registry, fairness, active, activeMetrics, alerts, startupAlert, stopWatchdog, stopDigest };
+  return {
+    app,
+    db,
+    registry,
+    fairness,
+    active,
+    activeMetrics,
+    alerts,
+    startupAlert,
+    stopWatchdog,
+    stopDigest,
+    stopFairnessReconciler,
+  };
 }

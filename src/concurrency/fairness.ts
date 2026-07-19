@@ -3,6 +3,14 @@ import type { ClientConfig, ClientRegistry } from '../clients/registry.js';
 
 export type AdmitResult = 'ok' | 'client_full' | 'global_full' | 'dedup_full';
 
+/** Расхождение, найденное и исправленное reconcile() — для логирования вызывающей стороной. */
+export interface DriftCorrection {
+  /** clientId клиента или 'global' для общего счётчика. */
+  scope: string;
+  trackedActive: number;
+  actualActive: number;
+}
+
 interface ClientSlot {
   queue: PQueue;
   /** admitted-но-ещё-не-завершённые запросы клиента (running + pending). */
@@ -76,6 +84,35 @@ export class FairnessManager {
   /** Пер-клиентская очередь для постановки задачи. */
   queueFor(clientId: string): PQueue {
     return this.slots.get(clientId)?.queue ?? this.globalQueue;
+  }
+
+  /**
+   * Сверяет tracked-счётчики (active per client + globalActive) с фактическим числом
+   * admitted-запросов (эталон — ActiveMetrics.countAdmittedByClient()/countAdmittedTotal(),
+   * которые обновляются в finally-блоке обработчика запроса и не подвержены утечке из-за
+   * пропущенных Fastify-хуков onResponse/onRequestAbort).
+   *
+   * Зачем: release() слота полагается на то, что onResponse либо onRequestAbort гарантированно
+   * сработает ровно один раз для каждого admitted-запроса. Если по какой-то причине (редкий
+   * edge-case на стороне соединения клиент↔nginx↔Node) не сработал ни один из хуков — slot.active
+   * навечно застревает на maxConcurrency+maxPending, и клиент получает queue_full независимо от
+   * реальной нагрузки, до ручного restart (см. docs/runbook.md, инцидент estimat 2026-07-17).
+   * reconcile() — самовосстановление на случай именно такой утечки, вызывать периодически.
+   */
+  reconcile(actualByClient: Map<string, number>, actualGlobal: number): DriftCorrection[] {
+    const corrections: DriftCorrection[] = [];
+    for (const [clientId, slot] of this.slots) {
+      const actual = actualByClient.get(clientId) ?? 0;
+      if (slot.active !== actual) {
+        corrections.push({ scope: clientId, trackedActive: slot.active, actualActive: actual });
+        slot.active = actual;
+      }
+    }
+    if (this.globalActive !== actualGlobal) {
+      corrections.push({ scope: 'global', trackedActive: this.globalActive, actualActive: actualGlobal });
+      this.globalActive = actualGlobal;
+    }
+    return corrections;
   }
 
   /** Метрики для дашборда/дебага. */

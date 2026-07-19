@@ -42,15 +42,20 @@ export interface ChatRoutesDeps {
   activeMetrics: ActiveMetrics;
 }
 
-/** Реестр живых запросов для watchdog'а. */
+/** Реестр живых запросов для watchdog'а и для сверки admission-счётчиков (см. concurrency/reconcile.ts). */
 export class ActiveMetrics implements ActiveSource {
   private readonly active = new Map<
     string,
-    { startedAt: number; deadlineAt: number; abort: AbortController }
+    { clientId: string; admitted: boolean; startedAt: number; deadlineAt: number; abort: AbortController }
   >();
 
-  register(requestId: string, deadlineAt: number, abort: AbortController): void {
-    this.active.set(requestId, { startedAt: Date.now(), deadlineAt, abort });
+  /**
+   * `admitted` — прошёл ли этот конкретный request fairness.tryAdmit (а не dedup-join,
+   * который делит промис с уже admitted-запросом и слот не занимает). Различие важно для
+   * countAdmittedByClient()/countAdmittedTotal() — join-запросы не должны туда попадать.
+   */
+  register(requestId: string, clientId: string, admitted: boolean, deadlineAt: number, abort: AbortController): void {
+    this.active.set(requestId, { clientId, admitted, startedAt: Date.now(), deadlineAt, abort });
   }
 
   unregister(requestId: string): void {
@@ -71,6 +76,23 @@ export class ActiveMetrics implements ActiveSource {
 
   abort(requestId: string): void {
     this.active.get(requestId)?.abort.abort();
+  }
+
+  /** Живые admitted-запросы (реально занимают fairness-слот) по clientId — эталон для reconcile(). */
+  countAdmittedByClient(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const v of this.active.values()) {
+      if (!v.admitted) continue;
+      counts.set(v.clientId, (counts.get(v.clientId) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  /** Суммарно admitted-запросов (эталон для глобального счётчика fairness). */
+  countAdmittedTotal(): number {
+    let n = 0;
+    for (const v of this.active.values()) if (v.admitted) n++;
+    return n;
   }
 }
 
@@ -139,6 +161,12 @@ export async function registerChatRoutes(
     if (admit !== 'ok') {
       reply.header('Retry-After', '10');
       const code = admit === 'dedup_full' ? 'dedup_full' : 'queue_full';
+      // Раньше отказ не логировался вообще — при инциденте (застрявший admission-слот
+      // клиента) в journald не остаётся ни следа причины, только сухая цифра 503 в nginx.
+      deps.logger.warn(
+        { clientId: client.clientId, requestId, admit },
+        'admission rejected: queue full',
+      );
       reply.code(503).send({
         error: { code, message: 'proxy queue is full, retry later' },
       });
@@ -224,7 +252,7 @@ async function handleChat(
     deps.config.MIN_REMAINING_MS,
   );
   const abort = new AbortController();
-  deps.activeMetrics.register(ctx.requestId, deadline.deadlineAt, abort);
+  deps.activeMetrics.register(ctx.requestId, ctx.clientId, ctx.admitted === true, deadline.deadlineAt, abort);
 
   const clientQueue = deps.fairness.queueFor(ctx.clientId);
   const factory = async (): Promise<ProxyResult> =>
