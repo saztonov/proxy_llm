@@ -3,6 +3,7 @@ import type { Config } from './config.js';
 import { logger } from './utils/logger.js';
 import { openDb, type DbHandle } from './storage/db.js';
 import { RequestsRepo } from './storage/requests-repo.js';
+import { BillingRepo } from './storage/billing-repo.js';
 import { OpenRouterClient } from './upstream/openrouter-client.js';
 import { ActiveRequests } from './dedup/active-requests.js';
 import { loadClientRegistry, type ClientRegistry } from './clients/registry.js';
@@ -11,6 +12,7 @@ import { startFairnessReconciler } from './concurrency/reconcile.js';
 import { TelegramSender } from './alerts/telegram.js';
 import { AlertEngine } from './alerts/rules.js';
 import { startDailyDigest } from './alerts/digest.js';
+import { startPriceSyncScheduler } from './billing/price-sync.js';
 import { StartupAlert } from './watchdog/startup-alert.js';
 import { startWatchdogTicker } from './watchdog/ticker.js';
 import { registerChatRoutes, ActiveMetrics } from './routes/chat-completions.js';
@@ -30,11 +32,13 @@ export interface AppBundle {
   stopWatchdog: () => void;
   stopDigest: () => void;
   stopFairnessReconciler: () => void;
+  stopPriceSync: () => void;
 }
 
 export async function buildApp(config: Config): Promise<AppBundle> {
   const db = openDb(config.DB_PATH);
   const repo = new RequestsRepo(db.db);
+  const billing = new BillingRepo(db.db);
 
   const registry = loadClientRegistry(config);
   const active = new ActiveRequests(config.MAX_ACTIVE_DEDUP_KEYS);
@@ -53,7 +57,7 @@ export async function buildApp(config: Config): Promise<AppBundle> {
     { botToken: config.TELEGRAM_BOT_TOKEN, chatId: config.TELEGRAM_ADMIN_CHAT_ID },
     logger,
   );
-  const alerts = new AlertEngine(config, telegram, repo, logger);
+  const alerts = new AlertEngine(config, telegram, repo, logger, billing);
 
   const stateFilePath = `${dirname(config.DB_PATH)}/proxy_llm.state.json`;
   const startupAlert = new StartupAlert(stateFilePath, alerts, logger);
@@ -72,6 +76,7 @@ export async function buildApp(config: Config): Promise<AppBundle> {
 
   const stopDigest = startDailyDigest(alerts, logger);
   const stopFairnessReconciler = startFairnessReconciler(fairness, activeMetrics, logger);
+  const stopPriceSync = startPriceSyncScheduler({ config, billing, logger });
 
   const app = Fastify({
     logger: false,
@@ -105,10 +110,11 @@ export async function buildApp(config: Config): Promise<AppBundle> {
     active,
     client,
     repo,
+    billing,
     alerts,
     activeMetrics,
   });
-  await registerDashboard(app, { config, repo, activeMetrics });
+  await registerDashboard(app, { config, repo, billing, activeMetrics });
 
   return {
     app,
@@ -122,5 +128,6 @@ export async function buildApp(config: Config): Promise<AppBundle> {
     stopWatchdog,
     stopDigest,
     stopFairnessReconciler,
+    stopPriceSync,
   };
 }

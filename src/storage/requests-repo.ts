@@ -34,7 +34,22 @@ export interface RequestRecord {
   client_ip: string | null;
   source: string;
   client_id: string | null;
+  /** Связка с ledger'ом billing_attempts. Денег в этой таблице нет. */
+  billing_execution_id?: string | null;
+  /** 1 — запрос присоединился к чужому выполнению по X-Idempotency-Key: своего списания нет. */
+  dedup_join?: number;
+  model_requested?: string | null;
 }
+
+/** RequestRecord с разрешёнными опциональными полями — ровно то, что уходит в bind. */
+type RequestRow = Omit<
+  RequestRecord,
+  'billing_execution_id' | 'dedup_join' | 'model_requested'
+> & {
+  billing_execution_id: string | null;
+  dedup_join: number;
+  model_requested: string | null;
+};
 
 export interface AggregateRow {
   total: number;
@@ -58,6 +73,13 @@ export interface DashboardRow {
   upstream_id: string | null;
   error_code: string | null;
   client_id: string | null;
+  /** 1 — присоединился к чужому выполнению: результат общий, отдельного списания нет. */
+  dedup_join: number;
+  /** Агрегаты по ledger'у выполнения; NULL, если попыток ещё нет (запись до-биллинговая). */
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_actual_usd: number | null;
+  missing_attempts: number | null;
 }
 
 export interface PerClientRow {
@@ -83,7 +105,7 @@ export class RequestsRepo {
   private readonly recentStatusStmt;
 
   constructor(private readonly db: Database.Database) {
-    this.insertStmt = db.prepare<RequestRecord>(`
+    this.insertStmt = db.prepare<RequestRow>(`
       INSERT INTO requests (
         request_id, idempotency_key, upstream_id,
         ts_received, ts_completed,
@@ -93,7 +115,8 @@ export class RequestsRepo {
         prompt_tokens, completion_tokens, total_tokens,
         attempt_count, retry_after_seconds,
         error_code, error_msg,
-        client_ip, source, client_id
+        client_ip, source, client_id,
+        billing_execution_id, dedup_join, model_requested
       ) VALUES (
         @request_id, @idempotency_key, @upstream_id,
         @ts_received, @ts_completed,
@@ -103,15 +126,29 @@ export class RequestsRepo {
         @prompt_tokens, @completion_tokens, @total_tokens,
         @attempt_count, @retry_after_seconds,
         @error_code, @error_msg,
-        @client_ip, @source, @client_id
+        @client_ip, @source, @client_id,
+        @billing_execution_id, @dedup_join, @model_requested
       )
     `);
 
+    // Коррелированные подзапросы вместо join с агрегатом по всей таблице: выбирается сотня
+    // строк, и каждая подтягивает свои попытки по индексу idx_ba_exec.
     this.listRecentStmt = db.prepare<[number]>(`
-      SELECT id, request_id, ts_received, ts_completed, model_used,
-             status, http_status, latency_ms, total_tokens, upstream_id, error_code, client_id
-      FROM requests
-      ORDER BY id DESC
+      SELECT r.id, r.request_id, r.ts_received, r.ts_completed, r.model_used,
+             r.status, r.http_status, r.latency_ms, r.total_tokens, r.upstream_id,
+             r.error_code, r.client_id, r.dedup_join,
+             (SELECT SUM(prompt_tokens) FROM billing_attempts b
+                WHERE b.execution_id = r.billing_execution_id) AS input_tokens,
+             (SELECT SUM(completion_tokens) FROM billing_attempts b
+                WHERE b.execution_id = r.billing_execution_id) AS output_tokens,
+             (SELECT SUM(CASE WHEN usage_source = 'response' THEN cost_usd ELSE 0 END)
+                FROM billing_attempts b
+                WHERE b.execution_id = r.billing_execution_id) AS cost_actual_usd,
+             (SELECT SUM(CASE WHEN usage_source <> 'response' THEN 1 ELSE 0 END)
+                FROM billing_attempts b
+                WHERE b.execution_id = r.billing_execution_id) AS missing_attempts
+      FROM requests r
+      ORDER BY r.id DESC
       LIMIT ?
     `);
 
@@ -167,7 +204,21 @@ export class RequestsRepo {
   }
 
   insert(record: RequestRecord): void {
-    this.insertStmt.run(record);
+    this.insertStmt.run(RequestsRepo.toRow(record));
+  }
+
+  /**
+   * Явный маппинг вместо спреда с дефолтами: better-sqlite3 падает на named-параметре со
+   * значением undefined, а `{...defaults, ...record}` именно undefined и пропускает внутрь,
+   * если ключ присутствует в объекте. Поэтому каждое опциональное поле приводится через `?? null`.
+   */
+  private static toRow(r: RequestRecord): RequestRow {
+    return {
+      ...r,
+      billing_execution_id: r.billing_execution_id ?? null,
+      dedup_join: r.dedup_join ?? 0,
+      model_requested: r.model_requested ?? null,
+    };
   }
 
   listRecent(limit: number): DashboardRow[] {

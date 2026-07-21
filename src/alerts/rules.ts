@@ -1,8 +1,10 @@
 import type { Config } from '../config.js';
 import type { RequestStatus, RequestsRepo } from '../storage/requests-repo.js';
+import type { BillingRepo } from '../storage/billing-repo.js';
 import { AlertCooldown } from './dedup.js';
 import { TelegramSender } from './telegram.js';
 import type { Logger } from '../utils/logger.js';
+import { todayIn, addDays } from '../billing/billing-time.js';
 
 export type AlertKind =
   | 'openrouter_401'
@@ -53,6 +55,7 @@ export class AlertEngine {
     private readonly telegram: TelegramSender,
     private readonly repo: RequestsRepo,
     private readonly logger: Logger,
+    private readonly billing?: BillingRepo,
   ) {}
 
   async onStartup(prevUptimeMs: number | null): Promise<void> {
@@ -150,7 +153,55 @@ export class AlertEngine {
         .join(', ');
       if (breakdown) lines.push(`Ошибки: ${breakdown}`);
     }
+    lines.push(...this.billingLines());
     await this.fire('daily_digest', lines.join('\n'));
+  }
+
+  /**
+   * Денежная часть сводки: завершённые сутки, текущий день с пометкой «неполный» и rolling 30.
+   * Факт и оценка выводятся раздельно — смешивать измеренное с расчётным нельзя.
+   */
+  private billingLines(): string[] {
+    if (!this.billing) return [];
+    const tz = this.config.BILLING_TIMEZONE;
+    const today = todayIn(tz);
+    const yesterday = addDays(today, -1);
+
+    const y = this.billing.spendTotals(yesterday, yesterday);
+    const t = this.billing.spendTotals(today, today);
+    const m = this.billing.spendTotals(addDays(today, -29), today);
+
+    const usd = (v: number): string => '$' + v.toFixed(4);
+    const approx = (v: number): string => (v > 0 ? ` (+≈${usd(v)} оценка)` : '');
+
+    const lines = [
+      '',
+      `💰 Расходы (${tz})`,
+      `Вчера (${yesterday}): ${usd(y.cost_actual_usd)}${approx(y.cost_approx_usd)} · ` +
+        `${y.input_tokens} in / ${y.output_tokens} out`,
+      `Сегодня (${today}, неполные сутки): ${usd(t.cost_actual_usd)}${approx(t.cost_approx_usd)}`,
+      `За 30 суток: ${usd(m.cost_actual_usd)}${approx(m.cost_approx_usd)}`,
+    ];
+
+    const perClient = this.billing
+      .spendByClient(yesterday, yesterday)
+      .filter((r) => r.cost_actual_usd > 0 || r.upstream_attempts > 0)
+      .map((r) => `  ${r.client_id ?? '—'}: ${usd(r.cost_actual_usd)} (${r.executions} выз.)`);
+    if (perClient.length > 0) lines.push('По клиентам за вчера:', ...perClient);
+
+    if (m.missing_rows > 0) {
+      lines.push(`⚠️ Попыток без стоимости за 30 суток: ${m.missing_rows}`);
+    }
+
+    // Отставание синхронизации означает, что оценка считается по устаревшему прайсу.
+    const sync = this.billing.lastSuccessfulSync();
+    if (!sync) {
+      lines.push('⚠️ Синхронизация цен ещё ни разу не проходила');
+    } else if (sync.run_day < yesterday) {
+      lines.push(`⚠️ Цены не обновлялись с ${sync.run_day}`);
+    }
+
+    return lines;
   }
 
   private async checkErrorRate(): Promise<void> {

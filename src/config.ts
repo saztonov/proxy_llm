@@ -10,6 +10,12 @@ const boolFromString = z
   .optional()
   .transform((v) => v === 'true' || v === '1');
 
+/** Как boolFromString, но по умолчанию включено: выключить можно только явным 'false'/'0'. */
+const boolFromStringDefaultTrue = z
+  .string()
+  .optional()
+  .transform((v) => v === undefined || !(v === 'false' || v === '0'));
+
 const schema = z.object({
   // Inbound
   LISTEN_HOST: z.string().default('127.0.0.1'),
@@ -50,6 +56,16 @@ const schema = z.object({
 
   // Storage
   DB_PATH: z.string().default('/var/lib/proxy_llm/prod.db'),
+
+  // Billing.
+  // BILLING_TIMEZONE — IANA-зона, в которой считаются биллинговые сутки. Вычисляется в TS и
+  // пишется колонкой billing_day; в SQL никаких сдвигов, чтобы границы суток не разъезжались.
+  BILLING_TIMEZONE: z.string().default('Europe/Moscow'),
+  BILLING_PRICE_SYNC_ENABLED: boolFromStringDefaultTrue,
+  BILLING_PRICE_SYNC_HOUR: z.coerce.number().int().min(0).max(23).default(6),
+  BILLING_PRICE_SYNC_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
+  // Каталог моделей — 1-3 МБ, общий UPSTREAM_RESPONSE_BODY_LIMIT_BYTES (2 МБ) для него мал.
+  BILLING_PRICE_BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(8_388_608),
 
   // Dashboard
   DASHBOARD_USER: z.string().default('admin'),

@@ -3,8 +3,16 @@ import type { Config } from '../config.js';
 import type { Logger } from '../utils/logger.js';
 import { newRequestId, isValidIdempotencyKey, isValidRequestId } from '../utils/ids.js';
 import { ActiveRequests, ActiveDedupFullError } from '../dedup/active-requests.js';
-import { OpenRouterClient, type ProxyResult } from '../upstream/openrouter-client.js';
+import {
+  OpenRouterClient,
+  type ProxyResult,
+  type AttemptObservation,
+} from '../upstream/openrouter-client.js';
 import { createDeadline } from '../upstream/deadline.js';
+import { billingDay } from '../billing/billing-time.js';
+import { resolvePayer } from '../billing/payer.js';
+import { estimateCost } from '../billing/estimate-cost.js';
+import type { BillingRepo, BillingAttemptRecord } from '../storage/billing-repo.js';
 import { clientWantedStreaming } from '../upstream/sanitize-payload.js';
 import { resolveModel } from '../upstream/resolve-model.js';
 import { sanitizeForLog } from '../utils/sanitize.js';
@@ -38,6 +46,7 @@ export interface ChatRoutesDeps {
   active: ActiveRequests;
   client: OpenRouterClient;
   repo: RequestsRepo;
+  billing: BillingRepo;
   alerts: AlertEngine;
   activeMetrics: ActiveMetrics;
 }
@@ -255,6 +264,9 @@ async function handleChat(
   deps.activeMetrics.register(ctx.requestId, ctx.clientId, ctx.admitted === true, deadline.deadlineAt, abort);
 
   const clientQueue = deps.fairness.queueFor(ctx.clientId);
+  // id генерируется здесь, но в ledger попадает только через фабрику — то есть только у
+  // запроса, который реально пошёл в OpenRouter. Присоединившийся получит чужой id обратно.
+  const candidateExecutionId = newRequestId();
   const factory = async (): Promise<ProxyResult> =>
     clientQueue.add(() =>
       deps.fairness.globalQueue.add(() =>
@@ -265,15 +277,25 @@ async function handleChat(
           modelResolution,
           clientId: ctx.clientId,
           signal: abort.signal,
+          onAttempt: makeAttemptSink(deps, ctx, modelResolution.model, candidateExecutionId),
           ...(ctx.client.openrouterApiKey ? { apiKey: ctx.client.openrouterApiKey } : {}),
         }),
       ),
     ) as Promise<ProxyResult>;
 
   let result: ProxyResult;
+  let executionId = candidateExecutionId;
+  let joined = false;
   try {
     if (ctx.idempotencyKey) {
-      result = await deps.active.registerOrJoin(dedupKeyOf(ctx.clientId, ctx.idempotencyKey), factory);
+      const tracked = deps.active.registerOrJoinTracked(
+        dedupKeyOf(ctx.clientId, ctx.idempotencyKey),
+        candidateExecutionId,
+        factory,
+      );
+      joined = tracked.joined;
+      executionId = tracked.executionId;
+      result = await tracked.promise;
     } else {
       result = await factory();
     }
@@ -294,14 +316,22 @@ async function handleChat(
       attemptCount: 0,
       fallbackUsed: null,
       headers: {},
-    } as unknown as ProxyResult, requestBytes, clientIp);
+    } as unknown as ProxyResult, requestBytes, clientIp, {
+      executionId,
+      joined,
+      modelRequested: modelResolution.model,
+    });
     reply.code(500).send({ error: { code: 'internal', message: 'internal proxy error' } });
     return;
   } finally {
     deps.activeMetrics.unregister(ctx.requestId);
   }
 
-  persistRecord(deps, ctx, result, requestBytes, clientIp);
+  persistRecord(deps, ctx, result, requestBytes, clientIp, {
+    executionId,
+    joined,
+    modelRequested: modelResolution.model,
+  });
 
   for (const [k, v] of Object.entries(result.headers)) {
     if (v !== undefined) reply.header(k, v);
@@ -310,12 +340,73 @@ async function handleChat(
   reply.send(result.bodyText);
 }
 
+interface BillingLink {
+  executionId: string;
+  joined: boolean;
+  modelRequested: string;
+}
+
+/**
+ * Sink наблюдений за попытками: превращает AttemptObservation в строку ledger'а.
+ *
+ * Живёт в роуте, а не в OpenRouterClient, чтобы клиент оставался storage-agnostic.
+ * Исключения гасит вызывающий (OpenRouterClient.emitAttempt) — учёт не должен ломать прокси.
+ */
+function makeAttemptSink(
+  deps: ChatRoutesDeps,
+  ctx: NonNullable<FastifyRequest['proxyContext']>,
+  modelRequested: string,
+  executionId: string,
+): (obs: AttemptObservation) => void {
+  const payer = resolvePayer(ctx.client, deps.config.OPENROUTER_API_KEY);
+  return (obs) => {
+    const modelId = obs.modelUsed ?? modelRequested;
+    // Цена, наблюдавшаяся на момент попытки, — не текущая: иначе вчерашний запрос
+    // пересчитывался бы по сегодняшнему прайсу.
+    const priceVersion = deps.billing.priceVersionAt(modelId, obs.tsStarted);
+    const est = estimateCost(priceVersion, obs.usage, modelId);
+    const record: BillingAttemptRecord = {
+      execution_id: executionId,
+      attempt_no: obs.attemptNo,
+      request_id: ctx.requestId,
+      client_id: ctx.clientId,
+      payer_scope: payer.scope,
+      api_key_fp: payer.fingerprint,
+      ts_started: obs.tsStarted,
+      ts_completed: obs.tsCompleted,
+      billing_day: billingDay(obs.tsStarted, deps.config.BILLING_TIMEZONE),
+      http_status: obs.httpStatus,
+      classification: obs.classification,
+      model_requested: modelRequested,
+      model_used: obs.modelUsed ?? null,
+      upstream_id: obs.upstreamId ?? null,
+      prompt_tokens: obs.usage?.promptTokens ?? null,
+      completion_tokens: obs.usage?.completionTokens ?? null,
+      total_tokens: obs.usage?.totalTokens ?? null,
+      cached_tokens: obs.usage?.cachedTokens ?? null,
+      cache_write_tokens: obs.usage?.cacheWriteTokens ?? null,
+      reasoning_tokens: obs.usage?.reasoningTokens ?? null,
+      cost_usd: obs.usage?.costUsd ?? null,
+      upstream_inference_cost_usd: obs.usage?.upstreamInferenceCostUsd ?? null,
+      is_byok: obs.usage?.isByok === undefined ? null : obs.usage.isByok ? 1 : 0,
+      usage_source: obs.usageSource,
+      // Диагностика: в денежные итоги не входит, показывается отдельно с пометкой «≈».
+      cost_est_usd: est.usd,
+      est_quality: est.quality,
+      est_price_version: priceVersion?.id ?? null,
+      usage_json: obs.usage?.raw ?? null,
+    };
+    deps.billing.insertAttempt(record);
+  };
+}
+
 function persistRecord(
   deps: ChatRoutesDeps,
   ctx: NonNullable<FastifyRequest['proxyContext']>,
   result: ProxyResult,
   requestBytes: number,
   clientIp: string,
+  billing: BillingLink,
 ): void {
   const tsCompleted = Date.now();
   const record: RequestRecord = {
@@ -331,9 +422,11 @@ function persistRecord(
     latency_ms: tsCompleted - ctx.tsReceived,
     request_bytes: requestBytes,
     response_bytes: Buffer.byteLength(result.bodyText, 'utf8'),
-    prompt_tokens: result.usage?.prompt_tokens ?? null,
-    completion_tokens: result.usage?.completion_tokens ?? null,
-    total_tokens: result.usage?.total_tokens ?? null,
+    // Токены последней попытки — legacy-поля для существующих оперативных агрегатов.
+    // Денежный и токенный учёт идёт по billing_attempts, где есть все попытки.
+    prompt_tokens: result.usage?.promptTokens ?? null,
+    completion_tokens: result.usage?.completionTokens ?? null,
+    total_tokens: result.usage?.totalTokens ?? null,
     attempt_count: result.attemptCount,
     retry_after_seconds: result.retryAfterSeconds ?? null,
     error_code: result.errorCode ?? null,
@@ -341,6 +434,9 @@ function persistRecord(
     client_ip: clientIp,
     source: ctx.client.source,
     client_id: ctx.clientId,
+    billing_execution_id: billing.executionId,
+    dedup_join: billing.joined ? 1 : 0,
+    model_requested: billing.modelRequested,
   };
 
   try {

@@ -14,8 +14,14 @@ export class ActiveDedupFullError extends Error {
  * (вызывающий вернёт 503). LRU-eviction активного ключа создал бы второй upstream-вызов
  * при retry с тем же X-Idempotency-Key — это уничтожило бы смысл idempotency.
  */
+interface ActiveEntry {
+  promise: Promise<ProxyResult>;
+  /** id фактического выполнения: присоединившиеся запросы ссылаются на него же. */
+  executionId: string;
+}
+
 export class ActiveRequests {
-  private readonly map = new Map<string, Promise<ProxyResult>>();
+  private readonly map = new Map<string, ActiveEntry>();
 
   constructor(private readonly cap: number) {}
 
@@ -28,7 +34,40 @@ export class ActiveRequests {
   }
 
   get(key: string): Promise<ProxyResult> | undefined {
-    return this.map.get(key);
+    return this.map.get(key)?.promise;
+  }
+
+  /**
+   * Регистрирует новый promise или присоединяется к существующему, сообщая, что именно
+   * произошло.
+   *
+   * Признак join доступен ТОЛЬКО отсюда: снаружи между `has()` и регистрацией есть окно
+   * гонки. Для биллинга это критично — присоединившийся запрос не порождает второго
+   * обращения к OpenRouter, а значит и второго списания, и его нельзя считать как расход.
+   *
+   * @throws ActiveDedupFullError если ключ новый и Map уже заполнен.
+   */
+  registerOrJoinTracked(
+    key: string,
+    executionId: string,
+    factory: () => Promise<ProxyResult>,
+  ): { promise: Promise<ProxyResult>; joined: boolean; executionId: string } {
+    const existing = this.map.get(key);
+    // При join возвращаем id ЧУЖОГО выполнения: строка журнала присоединившегося запроса
+    // должна указывать на те же billing_attempts, а не заводить собственное выполнение.
+    if (existing) {
+      return { promise: existing.promise, joined: true, executionId: existing.executionId };
+    }
+
+    if (this.map.size >= this.cap) {
+      throw new ActiveDedupFullError(this.map.size, this.cap);
+    }
+
+    const promise = factory().finally(() => {
+      this.map.delete(key);
+    });
+    this.map.set(key, { promise, executionId });
+    return { promise, joined: false, executionId };
   }
 
   /**
@@ -39,17 +78,6 @@ export class ActiveRequests {
     key: string,
     factory: () => Promise<ProxyResult>,
   ): Promise<ProxyResult> {
-    const existing = this.map.get(key);
-    if (existing) return existing;
-
-    if (this.map.size >= this.cap) {
-      throw new ActiveDedupFullError(this.map.size, this.cap);
-    }
-
-    const promise = factory().finally(() => {
-      this.map.delete(key);
-    });
-    this.map.set(key, promise);
-    return promise;
+    return this.registerOrJoinTracked(key, `legacy:${key}`, factory).promise;
   }
 }

@@ -15,14 +15,35 @@ import {
 import { filterResponseHeaders, type FilteredHeaders } from './filter-response-headers.js';
 import { buildUpstreamPayload } from './sanitize-payload.js';
 import type { ModelResolution } from './resolve-model.js';
+import { normalizeUsage, hasCost, type NormalizedUsage } from './usage.js';
 import { sanitizeErrorForLog } from '../utils/sanitize-error.js';
 import type { Logger } from '../utils/logger.js';
+
+/**
+ * Наблюдение за одной фактической попыткой обращения к OpenRouter.
+ *
+ * Отдаётся колбэком сразу после попытки — ДО решения о ретрае, чтобы оплаченная, но
+ * отброшенная попытка не потерялась (в том числе при падении процесса). Клиент остаётся
+ * storage-agnostic: писать наблюдение в БД — дело вызывающего.
+ */
+export interface AttemptObservation {
+  attemptNo: number;
+  tsStarted: number;
+  tsCompleted: number;
+  httpStatus: number | null;
+  classification: Classification['kind'];
+  modelUsed?: string;
+  upstreamId?: string;
+  usage?: NormalizedUsage;
+  /** 'response' — usage.cost получен; 'missing' — тело не разобрано либо cost не пришёл. */
+  usageSource: 'response' | 'missing';
+}
 
 export interface ProxyResult {
   statusCode: number;
   headers: FilteredHeaders;
   bodyText: string;
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  usage?: NormalizedUsage;
   modelUsed?: string;
   upstreamId?: string;
   classification: Classification['kind'];
@@ -46,6 +67,11 @@ export interface ExecuteOptions {
   signal?: AbortSignal;
   /** Per-tenant ключ OpenRouter; иначе глобальный OPENROUTER_API_KEY. */
   apiKey?: string;
+  /**
+   * Биллинговый sink: вызывается после каждой фактической попытки, до решения о ретрае.
+   * Исключения из колбэка гасятся — сбой учёта не должен ломать проксирование.
+   */
+  onAttempt?: (obs: AttemptObservation) => void;
 }
 
 export class OpenRouterClient {
@@ -78,6 +104,7 @@ export class OpenRouterClient {
       const timer = setTimeout(() => ac.abort(), attemptTimeoutMs).unref();
       // Внешний abort (watchdog/graceful) объединяем с per-attempt timeout — оба доводятся до undici.
       const signal = opts.signal ? AbortSignal.any([ac.signal, opts.signal]) : ac.signal;
+      const tsStarted = Date.now();
 
       try {
         const res = await undiciRequest(this.endpoint, {
@@ -104,6 +131,18 @@ export class OpenRouterClient {
           opts.modelResolution,
         );
 
+        this.emitAttempt(opts, {
+          attemptNo: attempt,
+          tsStarted,
+          tsCompleted: Date.now(),
+          httpStatus: res.statusCode,
+          classification: classification.kind,
+          ...(result.modelUsed ? { modelUsed: result.modelUsed } : {}),
+          ...(result.upstreamId ? { upstreamId: result.upstreamId } : {}),
+          ...(result.usage ? { usage: result.usage } : {}),
+          usageSource: hasCost(result.usage) ? 'response' : 'missing',
+        });
+
         if (classification.kind === 'success') {
           return result;
         }
@@ -122,6 +161,18 @@ export class OpenRouterClient {
       } catch (err) {
         clearTimeout(timer);
         const result = this.buildResultFromError(err, opts.requestId, attempt);
+
+        // Тело не разобрано (обрыв, таймаут, слишком большой ответ) — генерация могла быть
+        // оплачена, но cost и generation ID нам недоступны. Это дыра покрытия по построению:
+        // пишем её явно, чтобы она была видна в отчётах, а не молча исчезала.
+        this.emitAttempt(opts, {
+          attemptNo: attempt,
+          tsStarted,
+          tsCompleted: Date.now(),
+          httpStatus: null,
+          classification: result.classification,
+          usageSource: 'missing',
+        });
 
         if (result.classification === 'upstream_response_too_large') {
           return result;
@@ -143,6 +194,19 @@ export class OpenRouterClient {
     }
 
     return lastResult ?? this.makeDeadlineExceeded(opts.requestId, this.config.UPSTREAM_MAX_ATTEMPTS);
+  }
+
+  /** Отдаёт наблюдение биллингу. Сбой учёта не должен ломать проксирование — гасим всё. */
+  private emitAttempt(opts: ExecuteOptions, obs: AttemptObservation): void {
+    if (!opts.onAttempt) return;
+    try {
+      opts.onAttempt(obs);
+    } catch (err) {
+      this.logger.warn(
+        { err: sanitizeErrorForLog(err), requestId: opts.requestId, attempt: obs.attemptNo },
+        'billing attempt sink failed',
+      );
+    }
   }
 
   private buildUpstreamHeaders(requestId: string, apiKey?: string): Record<string, string> {
@@ -175,9 +239,9 @@ export class OpenRouterClient {
     const parsedObj = (parsed && typeof parsed === 'object') ? (parsed as Record<string, unknown>) : null;
     const upstreamId = typeof parsedObj?.id === 'string' ? parsedObj.id : null;
     const modelUsed = typeof parsedObj?.model === 'string' ? parsedObj.model : undefined;
-    const usage = parsedObj?.usage && typeof parsedObj.usage === 'object'
-      ? (parsedObj.usage as ProxyResult['usage'])
-      : undefined;
+    // Строгая нормализация вместо каста: негодное поле usage становится NULL, но не роняет
+    // bind в better-sqlite3 (иначе persistRecord потерял бы ВСЮ строку журнала).
+    const usage = normalizeUsage(parsedObj?.usage);
 
     const result: ProxyResult = {
       statusCode,

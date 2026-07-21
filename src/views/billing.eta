@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>proxy_llm — расходы</title>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 24px; color: #222; }
+    h1 { margin-top: 0; }
+    h2 { margin-top: 32px; font-size: 16px; }
+    .panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .card { padding: 12px 16px; border: 1px solid #ddd; border-radius: 8px; background: #fafafa; }
+    .card .label { font-size: 12px; text-transform: uppercase; color: #666; }
+    .card .value { font-size: 22px; margin-top: 4px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
+    th { background: #f5f5f5; font-weight: 600; }
+    td.num, th.num { text-align: right; }
+    .muted { color: #888; }
+    .warn { color: #a15c00; }
+    .meta { color: #666; font-size: 12px; margin-bottom: 16px; }
+    .note { background: #fffbe6; border: 1px solid #f0e0a0; border-radius: 8px; padding: 10px 14px; font-size: 12px; margin-bottom: 20px; }
+    form { margin-bottom: 20px; font-size: 13px; }
+    input { font-family: inherit; padding: 4px 6px; }
+    nav a { margin-right: 12px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>proxy_llm — расходы</h1>
+  <nav><a href="/dashboard">← дашборд</a><a href="/dashboard/billing.json?from=<%= it.from %>&to=<%= it.to %>">JSON</a></nav>
+  <div class="meta">
+    Период <%= it.from %> … <%= it.to %> · сутки по <%= it.timezone %> · сгенерировано <%= it.generatedAt %>
+  </div>
+
+  <div class="note">
+    <b>Факт</b> — сумма, реально списанная OpenRouter (<code>usage.cost</code>); только её можно
+    нести в бухгалтерию. <b>≈ оценка</b> — расчёт по каталожной цене для попыток, где факт не
+    пришёл; каталог публикует минимальную цену модели, а не цену провайдера, на которого ушёл
+    роутинг, поэтому оценка никогда не суммируется с фактом.
+    <b>missing</b> — попытки, где неизвестно ни то, ни другое (обрыв, таймаут, слишком большой
+    ответ): генерация могла быть оплачена, но данных о ней у нас нет.
+    <% if (it.accountingStartedAt) { %>
+      Достоверный денежный учёт ведётся с <%= it.accountingStartedAt %>.
+    <% } %>
+    Сутки считаются по <%= it.timezone %>, а OpenRouter отчитывается по UTC — суточные суммы
+    с инвойсом не совпадут.
+  </div>
+
+  <form method="get" action="/dashboard/billing">
+    <label>с <input type="date" name="from" value="<%= it.from %>"></label>
+    <label>по <input type="date" name="to" value="<%= it.to %>"></label>
+    <button type="submit">показать</button>
+  </form>
+
+  <div class="panel">
+    <div class="card">
+      <div class="label">Сегодня (неполные сутки)</div>
+      <div class="value">$<%= it.fmt(it.today.cost_actual_usd) %></div>
+      <div class="muted">
+        <%= it.today.executions %> вызовов · <%= it.today.input_tokens %> in / <%= it.today.output_tokens %> out
+        <% if (it.today.cost_approx_usd > 0) { %><br>≈ $<%= it.fmt(it.today.cost_approx_usd) %> оценка<% } %>
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">Вчера</div>
+      <div class="value">$<%= it.fmt(it.yesterday.cost_actual_usd) %></div>
+      <div class="muted">
+        <%= it.yesterday.executions %> вызовов · <%= it.yesterday.input_tokens %> in / <%= it.yesterday.output_tokens %> out
+        <% if (it.yesterday.cost_approx_usd > 0) { %><br>≈ $<%= it.fmt(it.yesterday.cost_approx_usd) %> оценка<% } %>
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">За период</div>
+      <div class="value">$<%= it.fmt(it.totals.cost_actual_usd) %></div>
+      <div class="muted">
+        <%= it.totals.executions %> вызовов · <%= it.totals.upstream_attempts %> попыток
+        <% if (it.totals.cost_approx_usd > 0) { %><br>≈ $<%= it.fmt(it.totals.cost_approx_usd) %> оценка<% } %>
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">Токенов за период</div>
+      <div class="value"><%= it.totals.input_tokens %> / <%= it.totals.output_tokens %></div>
+      <div class="muted">вход / выход · из них кэш <%= it.totals.cached_tokens %></div>
+    </div>
+    <div class="card">
+      <div class="label">Потери на ретраях</div>
+      <div class="value">$<%= it.fmt(it.retryWaste) %></div>
+      <div class="muted">оплачено, но отброшено ретраем</div>
+    </div>
+    <div class="card">
+      <div class="label">Покрытие</div>
+      <div class="value <%= it.totals.missing_rows > 0 ? 'warn' : '' %>"><%= it.totals.missing_rows %></div>
+      <div class="muted">попыток без стоимости · оценённых: <%= it.totals.approx_rows %></div>
+    </div>
+  </div>
+
+  <h2>По клиентам за период</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>клиент</th>
+        <th class="num">вызовов</th>
+        <th class="num">попыток</th>
+        <th class="num">вход</th>
+        <th class="num">выход</th>
+        <th class="num">факт, $</th>
+        <th class="num">≈ оценка, $</th>
+        <th class="num">missing</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% it.byClient.forEach(function(r){ %>
+      <tr>
+        <td><%= r.client_id || '—' %></td>
+        <td class="num"><%= r.executions %></td>
+        <td class="num"><%= r.upstream_attempts %></td>
+        <td class="num"><%= r.input_tokens %></td>
+        <td class="num"><%= r.output_tokens %></td>
+        <td class="num"><%= it.fmt(r.cost_actual_usd) %></td>
+        <td class="num muted"><%= r.cost_approx_usd > 0 ? '≈ ' + it.fmt(r.cost_approx_usd) : '—' %></td>
+        <td class="num <%= r.missing_rows > 0 ? 'warn' : 'muted' %>"><%= r.missing_rows %></td>
+      </tr>
+      <% }) %>
+      <% if (it.byClient.length === 0) { %>
+      <tr><td colspan="8" class="muted">за период данных нет</td></tr>
+      <% } %>
+    </tbody>
+  </table>
+
+  <h2>По моделям за период</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>модель</th>
+        <th class="num">попыток</th>
+        <th class="num">вход</th>
+        <th class="num">выход</th>
+        <th class="num">reasoning</th>
+        <th class="num">факт, $</th>
+        <th class="num">≈ оценка, $</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% it.byModel.forEach(function(r){ %>
+      <tr>
+        <td><%= r.model || '—' %></td>
+        <td class="num"><%= r.upstream_attempts %></td>
+        <td class="num"><%= r.input_tokens %></td>
+        <td class="num"><%= r.output_tokens %></td>
+        <td class="num"><%= r.reasoning_tokens %></td>
+        <td class="num"><%= it.fmt(r.cost_actual_usd) %></td>
+        <td class="num muted"><%= r.cost_approx_usd > 0 ? '≈ ' + it.fmt(r.cost_approx_usd) : '—' %></td>
+      </tr>
+      <% }) %>
+      <% if (it.byModel.length === 0) { %>
+      <tr><td colspan="7" class="muted">за период данных нет</td></tr>
+      <% } %>
+    </tbody>
+  </table>
+
+  <h2>По суткам и клиентам</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>сутки</th>
+        <th>клиент</th>
+        <th class="num">вызовов</th>
+        <th class="num">вход</th>
+        <th class="num">выход</th>
+        <th class="num">факт, $</th>
+        <th class="num">≈ оценка, $</th>
+        <th class="num">missing</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% it.byDayClient.forEach(function(r){ %>
+      <tr>
+        <td><%= r.billing_day %></td>
+        <td><%= r.client_id || '—' %></td>
+        <td class="num"><%= r.executions %></td>
+        <td class="num"><%= r.input_tokens %></td>
+        <td class="num"><%= r.output_tokens %></td>
+        <td class="num"><%= it.fmt(r.cost_actual_usd) %></td>
+        <td class="num muted"><%= r.cost_approx_usd > 0 ? '≈ ' + it.fmt(r.cost_approx_usd) : '—' %></td>
+        <td class="num <%= r.missing_rows > 0 ? 'warn' : 'muted' %>"><%= r.missing_rows %></td>
+      </tr>
+      <% }) %>
+      <% if (it.byDayClient.length === 0) { %>
+      <tr><td colspan="8" class="muted">за период данных нет</td></tr>
+      <% } %>
+    </tbody>
+  </table>
+
+  <h2>Синхронизация цен</h2>
+  <div class="meta">
+    <% if (it.priceSync) { %>
+      последняя успешная: <%= it.priceSync.run_day %> · моделей: <%= it.priceSync.models_seen %> ·
+      новых версий цен: <%= it.priceSync.versions_written %>
+    <% } else { %>
+      <span class="warn">успешных синхронизаций ещё не было — каталожная оценка недоступна</span>
+    <% } %>
+  </div>
+</body>
+</html>

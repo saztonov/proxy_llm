@@ -52,6 +52,8 @@
     </div>
   </div>
 
+  <div class="meta"><a href="/dashboard/billing">→ расходы по потребителям</a></div>
+
   <h2>Последние 100 запросов</h2>
   <table>
     <thead>
@@ -64,7 +66,8 @@
         <th>http</th>
         <th>model</th>
         <th>latency</th>
-        <th>tokens</th>
+        <th>in / out</th>
+        <th>cost, $</th>
         <th>upstream_id</th>
         <th>error</th>
       </tr>
@@ -80,7 +83,16 @@
         <td><%= r.http_status || '—' %></td>
         <td><%= r.model_used || '—' %></td>
         <td><%= r.latency_ms !== null ? r.latency_ms + ' ms' : '—' %></td>
-        <td><%= r.total_tokens || '—' %></td>
+        <td><%= (r.input_tokens || 0) + ' / ' + (r.output_tokens || 0) %></td>
+        <%
+          /* Строка-join делит результат с чужим выполнением: своего списания у неё нет,
+             поэтому стоимость здесь не дублируется. */
+        %>
+        <% if (r.dedup_join === 1) { %>
+        <td class="muted" title="общий результат по X-Idempotency-Key, дополнительного списания нет">join</td>
+        <% } else { %>
+        <td><%= r.cost_actual_usd !== null ? r.cost_actual_usd.toFixed(6) : '—' %><%= r.missing_attempts ? ' ⚠' : '' %></td>
+        <% } %>
         <td><code><%= r.upstream_id || '—' %></code></td>
         <td class="muted"><%= r.error_code || '' %></td>
       </tr>

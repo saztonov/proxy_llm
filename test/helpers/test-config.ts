@@ -36,6 +36,16 @@ export function makeTestConfig(overrides: Partial<Config> = {}): Config {
 
     DB_PATH: join(dir, 'test.db'),
 
+    // Фиксируем зону явно: иначе billing_day считался бы по системной зоне машины и тесты
+    // границ суток были бы недетерминированными.
+    BILLING_TIMEZONE: 'Europe/Moscow',
+    // Выключено по умолчанию: иначе демон при buildApp сходит на мок-сервер за каталогом
+    // моделей и сломает ассерты «апстрим вызван N раз» в существующих тестах.
+    BILLING_PRICE_SYNC_ENABLED: false,
+    BILLING_PRICE_SYNC_HOUR: 6,
+    BILLING_PRICE_SYNC_TIMEOUT_MS: 20_000,
+    BILLING_PRICE_BODY_LIMIT_BYTES: 8_388_608,
+
     DASHBOARD_USER: 'admin',
     DASHBOARD_BASIC_AUTH_PASS: 'test-pass',
 
