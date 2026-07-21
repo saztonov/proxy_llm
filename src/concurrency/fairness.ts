@@ -3,6 +3,9 @@ import type { ClientConfig, ClientRegistry } from '../clients/registry.js';
 
 export type AdmitResult = 'ok' | 'client_full' | 'global_full' | 'dedup_full';
 
+/** Псевдо-scope общего счётчика в отчётах о расхождении. */
+export const GLOBAL_SCOPE = 'global';
+
 /** Расхождение, найденное и исправленное reconcile() — для логирования вызывающей стороной. */
 export interface DriftCorrection {
   /** clientId клиента или 'global' для общего счётчика. */
@@ -100,19 +103,61 @@ export class FairnessManager {
    * reconcile() — самовосстановление на случай именно такой утечки, вызывать периодически.
    */
   reconcile(actualByClient: Map<string, number>, actualGlobal: number): DriftCorrection[] {
-    const corrections: DriftCorrection[] = [];
+    const drift = this.measureDrift(actualByClient, actualGlobal);
+    for (const d of drift) {
+      if (d.scope === GLOBAL_SCOPE) {
+        this.globalActive = d.actualActive;
+      } else {
+        const slot = this.slots.get(d.scope);
+        if (slot) slot.active = d.actualActive;
+      }
+    }
+    return drift;
+  }
+
+  /**
+   * То же сравнение, что и reconcile(), но БЕЗ применения — только измерение.
+   *
+   * Нужно затем, что мгновенное расхождение ещё не означает утечку. Слот выдаётся в
+   * onRequest-хуке (до чтения тела), а в ActiveMetrics запрос попадает уже внутри
+   * обработчика — то есть после парсинга тела. Для запросов на сотни килобайт это окно
+   * порядка секунд, и тик, попавший в него, видит tracked=1/actual=0 у совершенно
+   * здорового запроса. Отличить утечку от этого окна можно только по времени: настоящая
+   * утечка держится вечно, окно исчезает на следующем тике (см. concurrency/reconcile.ts).
+   */
+  measureDrift(actualByClient: Map<string, number>, actualGlobal: number): DriftCorrection[] {
+    const drift: DriftCorrection[] = [];
     for (const [clientId, slot] of this.slots) {
       const actual = actualByClient.get(clientId) ?? 0;
       if (slot.active !== actual) {
-        corrections.push({ scope: clientId, trackedActive: slot.active, actualActive: actual });
-        slot.active = actual;
+        drift.push({ scope: clientId, trackedActive: slot.active, actualActive: actual });
       }
     }
     if (this.globalActive !== actualGlobal) {
-      corrections.push({ scope: 'global', trackedActive: this.globalActive, actualActive: actualGlobal });
-      this.globalActive = actualGlobal;
+      drift.push({
+        scope: GLOBAL_SCOPE,
+        trackedActive: this.globalActive,
+        actualActive: actualGlobal,
+      });
     }
-    return corrections;
+    return drift;
+  }
+
+  /**
+   * Снимает ровно `count` залипших слотов, не трогая живые запросы.
+   *
+   * В отличие от reconcile(), не приравнивает счётчик к эталону: вычитается только та
+   * часть превышения, которая подтверждена наблюдением за окно. Запрос, находящийся в
+   * этот момент между admission и регистрацией, свой слот сохраняет.
+   */
+  releaseLeaked(scope: string, count: number): void {
+    if (count <= 0) return;
+    if (scope === GLOBAL_SCOPE) {
+      this.globalActive = Math.max(0, this.globalActive - count);
+      return;
+    }
+    const slot = this.slots.get(scope);
+    if (slot) slot.active = Math.max(0, slot.active - count);
   }
 
   /** Метрики для дашборда/дебага. */
