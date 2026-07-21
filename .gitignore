@@ -148,3 +148,6 @@ vite.config.ts.timestamp-*
 *.db-shm
 data/
 .idea/
+
+temp/
+
