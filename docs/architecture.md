@@ -80,14 +80,15 @@ Response клиенту (whitelist headers: content-type, X-Proxy-Request-Id, X-
 
 ```text
 Бюджеты:
-  REQUEST_DEADLINE_MS         = 190000   общий потолок со всеми попытками
-  UPSTREAM_ATTEMPT_TIMEOUT_MS = 160000   одна попытка
+  REQUEST_DEADLINE_MS         = 420000   общий потолок со всеми попытками
+  UPSTREAM_ATTEMPT_TIMEOUT_MS = 360000   одна попытка
   UPSTREAM_MAX_ATTEMPTS       = 2
   MIN_REMAINING_MS            = 10000    если меньше — новую попытку не начинаем
 
 Наружу:
-  nginx proxy_read_timeout / proxy_send_timeout = 220s   (> REQUEST_DEADLINE_MS)
-  PassDesk axios timeout (OCR_SCAN_REQUEST_TIMEOUT_MS)   ≥ 230s
+  nginx proxy_read_timeout / proxy_send_timeout = 480s   (> REQUEST_DEADLINE_MS)
+  id.su10 LLM_TIMEOUT_MS                          = 450000 (> REQUEST_DEADLINE_MS)
+  PassDesk axios timeout (OCR_SCAN_REQUEST_TIMEOUT_MS)   ≥ 460s
 
 НЕ ретраить:
   400, 401 (немедленный алерт), 402 (немедленный алерт), 403

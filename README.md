@@ -62,7 +62,7 @@ npm start           # node dist/server.js
 - **Всегда молча удаляются** из payload: `models` (свою fallback-цепочку прислать нельзя), `provider`, `route`, `transforms`, `plugins`, `stream_options`, `debug`.
 - **HTTP 200 ≠ success автоматически.** Если в JSON-теле есть `error` или пустые `choices` — это `body_level_error` / `malformed_success` в журнале.
 - **Idempotency** через `X-Idempotency-Key`: параллельные запросы с одним ключом получают один upstream-вызов. Hard cap (1000 активных ключей), без LRU eviction.
-- **Общий deadline** `REQUEST_DEADLINE_MS=190s` покрывает все попытки + backoff. nginx `proxy_read_timeout=220s` — 504 формирует прокси, не nginx.
+- **Общий deadline** `REQUEST_DEADLINE_MS=420s` покрывает все попытки + backoff. nginx `proxy_read_timeout=480s` — 504 формирует прокси, не nginx.
 - **Response body limit** `2 MB` — защита от мусора провайдера.
 - **Никаких тел запроса/ответа в журнале** — только метаданные. `pino-redact` на секреты и bodies.
 - **Никакого cold-replay после крэша** — PassDesk BullMQ сам ретраит.
