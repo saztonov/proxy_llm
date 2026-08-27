@@ -79,7 +79,7 @@ const schema = z.object({
   ALERT_ERROR_STREAK_THRESHOLD: z.coerce.number().int().positive().default(5),
   ALERT_ERROR_RATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.3),
   ALERT_ERROR_RATE_WINDOW: z.coerce.number().int().positive().default(50),
-  ALERT_LONG_REQUEST_MS: z.coerce.number().int().positive().default(150_000),
+  ALERT_LONG_REQUEST_MS: z.coerce.number().int().positive().default(360_000),
   ALERT_DISK_FREE_MIN_BYTES: z.coerce.number().int().nonnegative().default(524_288_000),
 
   // Misc

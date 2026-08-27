@@ -44,4 +44,47 @@ describe('sanitize-payload', () => {
     expect(clientWantedStreaming({ stream: false })).toBe(false);
     expect(clientWantedStreaming({})).toBe(false);
   });
+
+  it('disables Qwen thinking for qwen/* models', () => {
+    const payload = buildUpstreamPayload(
+      { messages: [{ role: 'user', content: 'hi' }], max_tokens: 4096 },
+      { model: 'qwen/qwen3.8-27b', fallbackModels: [] },
+    );
+
+    expect(payload).toMatchObject({
+      model: 'qwen/qwen3.8-27b',
+      max_tokens: 4096,
+      reasoning: { effort: 'none' },
+      chat_template_kwargs: { enable_thinking: false },
+      enable_thinking: false,
+      stream: false,
+    });
+  });
+
+  it('does not override explicit Qwen thinking settings from client', () => {
+    const payload = buildUpstreamPayload(
+      {
+        messages: [{ role: 'user', content: 'hi' }],
+        reasoning: { effort: 'high' },
+        chat_template_kwargs: { enable_thinking: true },
+        enable_thinking: true,
+      },
+      { model: 'qwen/qwen3-8b', fallbackModels: [] },
+    );
+
+    expect(payload.reasoning).toEqual({ effort: 'high' });
+    expect(payload.chat_template_kwargs).toEqual({ enable_thinking: true });
+    expect(payload.enable_thinking).toBe(true);
+  });
+
+  it('does not inject Qwen overrides for non-qwen models', () => {
+    const payload = buildUpstreamPayload(
+      { messages: [{ role: 'user', content: 'hi' }] },
+      { model: 'google/gemini-2.5-flash', fallbackModels: [] },
+    );
+
+    expect(payload.reasoning).toBeUndefined();
+    expect(payload.chat_template_kwargs).toBeUndefined();
+    expect(payload.enable_thinking).toBeUndefined();
+  });
 });

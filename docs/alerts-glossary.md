@@ -10,7 +10,7 @@
 | ⚠️ **Серия ошибок** | ≥5 ошибок подряд | 10 мин | Смотреть `journalctl -u proxy_llm -n 200` и `/dashboard`. |
 | 📉 **Высокий error rate** | >30% за последние 50 запросов (min 20) | 30 мин | Деградация OpenRouter или сетевая проблема. |
 | 📡 **OpenRouter недоступен** | DNS/TCP-ошибка ≥3 подряд | 5 мин | Проверить `dig openrouter.ai`, `curl -v https://openrouter.ai/`. |
-| 🐢 **Долгий запрос** | latency > ALERT_LONG_REQUEST_MS (default 150s) | per-request | Один конкретный запрос. Watchdog должен abort'ить. |
+| 🐢 **Долгий запрос** | latency > ALERT_LONG_REQUEST_MS (default 360s) | per-request | Один конкретный запрос. Watchdog должен abort'ить. |
 | 🔥 **Зависший запрос** | watchdog нашёл активный > deadline+30s | per-request | Принудительный abort. Изучить причину (баг). |
 | 💾 **Мало места на диске** | < ALERT_DISK_FREE_MIN_BYTES (default 500 МБ) | 24 ч | См. [runbook.md](runbook.md#мало-места-на-диске). |
 | ✅ **Восстановление** | первый успех после серии ошибок | нет | Информационный — никаких действий. |
@@ -38,7 +38,7 @@
 ALERT_ERROR_STREAK_THRESHOLD=5      # серия ошибок
 ALERT_ERROR_RATE_THRESHOLD=0.30     # 30% error rate
 ALERT_ERROR_RATE_WINDOW=50          # окно для error rate
-ALERT_LONG_REQUEST_MS=150000        # долгий запрос
+ALERT_LONG_REQUEST_MS=360000        # долгий запрос
 ALERT_DISK_FREE_MIN_BYTES=524288000 # 500 МБ
 ```
 

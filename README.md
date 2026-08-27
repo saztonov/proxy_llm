@@ -60,6 +60,7 @@ npm start           # node dist/server.js
 - **`stream:true` запрещён** (400) — упрощает retry/timeout/journal.
 - **`model` — по политике клиента** из `clients.json`. `allowedModels` пуст → клиентский `model` игнорируется, идёт `defaultModel` клиента + его fallback-цепочка (поведение по умолчанию). Список или `["*"]` → клиент выбирает сам; модель вне списка → 400 `model_not_allowed`. Явный выбор **отключает** fallback-цепочку. Заглушки `proxy`/`default`/`auto` в поле `model` = «модель не выбрана» → дефолт клиента. Подробнее — [docs/vps-update.md](docs/vps-update.md) §4a.
 - **Всегда молча удаляются** из payload: `models` (свою fallback-цепочку прислать нельзя), `provider`, `route`, `transforms`, `plugins`, `stream_options`, `debug`.
+- **Qwen (`qwen/*`)** — прокси сам добавляет `reasoning.effort=none`, `enable_thinking=false` и `chat_template_kwargs.enable_thinking=false`, если клиент их не задал явно (hybrid-модели иначе съедают `max_tokens` на thinking).
 - **HTTP 200 ≠ success автоматически.** Если в JSON-теле есть `error` или пустые `choices` — это `body_level_error` / `malformed_success` в журнале.
 - **Idempotency** через `X-Idempotency-Key`: параллельные запросы с одним ключом получают один upstream-вызов. Hard cap (1000 активных ключей), без LRU eviction.
 - **Общий deadline** `REQUEST_DEADLINE_MS=420s` покрывает все попытки + backoff. nginx `proxy_read_timeout=480s` — 504 формирует прокси, не nginx.
