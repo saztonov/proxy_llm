@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import type { Contour } from './requests-repo.js';
 
 /**
  * Репозиторий денежного учёта.
@@ -43,7 +44,25 @@ export interface BillingAttemptRecord {
   est_quality: EstQuality | null;
   est_price_version: number | null;
   usage_json: string | null;
+  /** По умолчанию 'site'. */
+  contour?: Contour;
+  token_id?: number | null;
+  department_id?: number | null;
+  employee_id?: number | null;
+  /** Провайдер агентского контура; NULL у сайтов (там всегда OpenRouter). */
+  provider_id?: number | null;
 }
+
+type BillingAttemptRow = Omit<
+  BillingAttemptRecord,
+  'contour' | 'token_id' | 'department_id' | 'employee_id' | 'provider_id'
+> & {
+  contour: Contour;
+  token_id: number | null;
+  department_id: number | null;
+  employee_id: number | null;
+  provider_id: number | null;
+};
 
 /**
  * Версия цены модели. Цены — строки ровно как в каталоге OpenRouter: значения вида 5e-9
@@ -115,6 +134,44 @@ export interface ModelSpendRow extends SpendTotals {
   model: string | null;
 }
 
+export interface DepartmentSpendRow extends SpendTotals {
+  department_id: number | null;
+  department_slug: string | null;
+  department_name: string | null;
+}
+
+export interface EmployeeSpendRow extends SpendTotals {
+  employee_id: number | null;
+  employee_login: string | null;
+  employee_name: string | null;
+  department_id: number | null;
+}
+
+export interface AgentTokenSpendRow extends SpendTotals {
+  token_id: number | null;
+  token_label: string | null;
+  token_prefix: string | null;
+  principal_type: string | null;
+}
+
+export interface ProviderSpendRow extends SpendTotals {
+  provider_id: number | null;
+  provider_name: string | null;
+}
+
+export interface SiteTokenSpendRow extends SpendTotals {
+  client_id: string | null;
+  token_id: number | null;
+  token_label: string | null;
+  token_prefix: string | null;
+}
+
+export interface DayDepartmentSpendRow extends SpendTotals {
+  billing_day: string;
+  department_id: number | null;
+  department_name: string | null;
+}
+
 /**
  * Общие агрегаты. usage_source='response' → факт; иначе в дело идёт оценка, но в отдельную
  * колонку. Строка попадает в missing_rows, только если нет ни факта, ни оценки.
@@ -136,7 +193,15 @@ const SPEND_COLUMNS = `
                                             AS approx_rows
 `;
 
-const SPEND_WHERE = `WHERE billing_day >= ? AND billing_day <= ?`;
+/** Период + необязательный фильтр контура (NULL — оба контура). */
+const SPEND_WHERE = `WHERE billing_day >= @from AND billing_day <= @to AND (@contour IS NULL OR contour = @contour)`;
+
+/** Период агентского контура для отчётов с join справочников (алиас b = billing_attempts). */
+const AGENT_RANGE = `b.contour = 'agent' AND b.billing_day >= @from AND b.billing_day <= @to`;
+
+function range(from: string, to: string, contour?: Contour): { from: string; to: string; contour: Contour | null } {
+  return { from, to, contour: contour ?? null };
+}
 
 export class BillingRepo {
   private readonly insertAttemptStmt;
@@ -152,11 +217,17 @@ export class BillingRepo {
   private readonly spendByModelStmt;
   private readonly spendTotalsStmt;
   private readonly retryWasteStmt;
+  private readonly spendByDepartmentStmt;
+  private readonly spendByEmployeeStmt;
+  private readonly spendByAgentTokenStmt;
+  private readonly spendByProviderStmt;
+  private readonly spendBySiteTokenStmt;
+  private readonly spendByDayDepartmentStmt;
 
   constructor(private readonly db: Database.Database) {
     // ON CONFLICT DO NOTHING по (execution_id, attempt_no): повторная запись того же
     // наблюдения не должна ни падать, ни задваивать расход.
-    this.insertAttemptStmt = db.prepare<BillingAttemptRecord>(`
+    this.insertAttemptStmt = db.prepare<BillingAttemptRow>(`
       INSERT INTO billing_attempts (
         execution_id, attempt_no, request_id, client_id, payer_scope, api_key_fp,
         ts_started, ts_completed, billing_day,
@@ -165,7 +236,8 @@ export class BillingRepo {
         prompt_tokens, completion_tokens, total_tokens,
         cached_tokens, cache_write_tokens, reasoning_tokens,
         cost_usd, upstream_inference_cost_usd, is_byok, usage_source,
-        cost_est_usd, est_quality, est_price_version, usage_json
+        cost_est_usd, est_quality, est_price_version, usage_json,
+        contour, token_id, department_id, employee_id, provider_id
       ) VALUES (
         @execution_id, @attempt_no, @request_id, @client_id, @payer_scope, @api_key_fp,
         @ts_started, @ts_completed, @billing_day,
@@ -174,7 +246,8 @@ export class BillingRepo {
         @prompt_tokens, @completion_tokens, @total_tokens,
         @cached_tokens, @cache_write_tokens, @reasoning_tokens,
         @cost_usd, @upstream_inference_cost_usd, @is_byok, @usage_source,
-        @cost_est_usd, @est_quality, @est_price_version, @usage_json
+        @cost_est_usd, @est_quality, @est_price_version, @usage_json,
+        @contour, @token_id, @department_id, @employee_id, @provider_id
       )
       ON CONFLICT(execution_id, attempt_no) DO NOTHING
     `);
@@ -229,32 +302,32 @@ export class BillingRepo {
 
     // billing_day — хранимая индексированная колонка, поэтому фильтр по периоду идёт по
     // индексу, а не через вычисление даты на каждой строке.
-    this.spendByDayClientStmt = db.prepare<[string, string]>(`
+    this.spendByDayClientStmt = db.prepare(`
       SELECT billing_day, client_id, ${SPEND_COLUMNS}
       FROM billing_attempts ${SPEND_WHERE}
       GROUP BY billing_day, client_id
       ORDER BY billing_day DESC, cost_actual_usd DESC
     `);
 
-    this.spendByClientStmt = db.prepare<[string, string]>(`
+    this.spendByClientStmt = db.prepare(`
       SELECT client_id, ${SPEND_COLUMNS}
       FROM billing_attempts ${SPEND_WHERE}
       GROUP BY client_id
       ORDER BY cost_actual_usd DESC
     `);
 
-    this.spendByModelStmt = db.prepare<[string, string]>(`
+    this.spendByModelStmt = db.prepare(`
       SELECT COALESCE(model_used, model_requested) AS model, ${SPEND_COLUMNS}
       FROM billing_attempts ${SPEND_WHERE}
       GROUP BY model
       ORDER BY cost_actual_usd DESC
     `);
 
-    this.spendTotalsStmt = db.prepare<[string, string]>(`
+    this.spendTotalsStmt = db.prepare(`
       SELECT ${SPEND_COLUMNS} FROM billing_attempts ${SPEND_WHERE}
     `);
 
-    this.retryWasteStmt = db.prepare<[string, string]>(`
+    this.retryWasteStmt = db.prepare(`
       SELECT COALESCE(SUM(cost_usd), 0.0) AS waste
       FROM billing_attempts a
       ${SPEND_WHERE}
@@ -263,10 +336,72 @@ export class BillingRepo {
           WHERE b.execution_id = a.execution_id AND b.attempt_no > a.attempt_no
         )
     `);
+
+    this.spendByDepartmentStmt = db.prepare(`
+      SELECT b.department_id, d.slug AS department_slug, d.name AS department_name, ${SPEND_COLUMNS}
+      FROM billing_attempts b LEFT JOIN departments d ON d.id = b.department_id
+      WHERE ${AGENT_RANGE}
+      GROUP BY b.department_id
+      ORDER BY cost_actual_usd DESC
+    `);
+
+    this.spendByEmployeeStmt = db.prepare(`
+      SELECT b.employee_id, e.login AS employee_login, e.display_name AS employee_name,
+             e.department_id AS department_id, ${SPEND_COLUMNS}
+      FROM billing_attempts b LEFT JOIN employees e ON e.id = b.employee_id
+      WHERE ${AGENT_RANGE} AND b.employee_id IS NOT NULL
+        AND (@departmentId IS NULL OR b.department_id = @departmentId)
+      GROUP BY b.employee_id
+      ORDER BY cost_actual_usd DESC
+    `);
+
+    this.spendByAgentTokenStmt = db.prepare(`
+      SELECT b.token_id, t.label AS token_label, t.token_prefix, t.principal_type, ${SPEND_COLUMNS}
+      FROM billing_attempts b LEFT JOIN agent_tokens t ON t.id = b.token_id
+      WHERE ${AGENT_RANGE}
+      GROUP BY b.token_id
+      ORDER BY cost_actual_usd DESC
+    `);
+
+    this.spendByProviderStmt = db.prepare(`
+      SELECT b.provider_id, p.name AS provider_name, ${SPEND_COLUMNS}
+      FROM billing_attempts b LEFT JOIN providers p ON p.id = b.provider_id
+      WHERE ${AGENT_RANGE}
+      GROUP BY b.provider_id
+      ORDER BY cost_actual_usd DESC
+    `);
+
+    this.spendBySiteTokenStmt = db.prepare(`
+      SELECT b.client_id, b.token_id, s.label AS token_label, s.token_prefix, ${SPEND_COLUMNS}
+      FROM billing_attempts b LEFT JOIN site_tokens s ON s.id = b.token_id
+      WHERE b.contour = 'site' AND b.billing_day >= @from AND b.billing_day <= @to
+      GROUP BY b.client_id, b.token_id
+      ORDER BY cost_actual_usd DESC
+    `);
+
+    this.spendByDayDepartmentStmt = db.prepare(`
+      SELECT b.billing_day, b.department_id, d.name AS department_name, ${SPEND_COLUMNS}
+      FROM billing_attempts b LEFT JOIN departments d ON d.id = b.department_id
+      WHERE ${AGENT_RANGE}
+      GROUP BY b.billing_day, b.department_id
+      ORDER BY b.billing_day DESC, cost_actual_usd DESC
+    `);
   }
 
   insertAttempt(record: BillingAttemptRecord): void {
-    this.insertAttemptStmt.run(record);
+    this.insertAttemptStmt.run(BillingRepo.toRow(record));
+  }
+
+  /** `?? null` для опциональных полей: better-sqlite3 падает на undefined в named-параметре. */
+  private static toRow(r: BillingAttemptRecord): BillingAttemptRow {
+    return {
+      ...r,
+      contour: r.contour ?? 'site',
+      token_id: r.token_id ?? null,
+      department_id: r.department_id ?? null,
+      employee_id: r.employee_id ?? null,
+      provider_id: r.provider_id ?? null,
+    };
   }
 
   latestPriceVersion(modelId: string): PriceVersionRow | null {
@@ -316,30 +451,60 @@ export class BillingRepo {
    * иначе по итогу невозможно понять, сколько в нём измеренного. Оценка живёт отдельной
    * колонкой и в отчётах показывается с пометкой «≈».
    */
-  spendByDayClient(fromDay: string, toDay: string): DayClientSpendRow[] {
-    return this.spendByDayClientStmt.all(fromDay, toDay) as DayClientSpendRow[];
+  spendByDayClient(fromDay: string, toDay: string, contour?: Contour): DayClientSpendRow[] {
+    return this.spendByDayClientStmt.all(range(fromDay, toDay, contour)) as DayClientSpendRow[];
   }
 
-  spendByClient(fromDay: string, toDay: string): ClientSpendRow[] {
-    return this.spendByClientStmt.all(fromDay, toDay) as ClientSpendRow[];
+  spendByClient(fromDay: string, toDay: string, contour?: Contour): ClientSpendRow[] {
+    return this.spendByClientStmt.all(range(fromDay, toDay, contour)) as ClientSpendRow[];
   }
 
-  spendByModel(fromDay: string, toDay: string): ModelSpendRow[] {
-    return this.spendByModelStmt.all(fromDay, toDay) as ModelSpendRow[];
+  spendByModel(fromDay: string, toDay: string, contour?: Contour): ModelSpendRow[] {
+    return this.spendByModelStmt.all(range(fromDay, toDay, contour)) as ModelSpendRow[];
   }
 
   /** Сводка за период целиком (для карточек «сегодня / вчера / 30 суток»). */
-  spendTotals(fromDay: string, toDay: string): SpendTotals {
-    return this.spendTotalsStmt.get(fromDay, toDay) as SpendTotals;
+  spendTotals(fromDay: string, toDay: string, contour?: Contour): SpendTotals {
+    return this.spendTotalsStmt.get(range(fromDay, toDay, contour)) as SpendTotals;
   }
 
   /**
    * Стоимость попыток, отброшенных ретраем: генерация оплачена, а результат не отдан клиенту.
    * Ровно эта сумма объясняет часть расхождения с инвойсом OpenRouter.
    */
-  retryWasteUsd(fromDay: string, toDay: string): number {
-    const row = this.retryWasteStmt.get(fromDay, toDay) as { waste: number };
+  retryWasteUsd(fromDay: string, toDay: string, contour?: Contour): number {
+    const row = this.retryWasteStmt.get(range(fromDay, toDay, contour)) as { waste: number };
     return row.waste;
+  }
+
+  /** Расход агентского контура по отделам (токены сотрудников сворачиваются в их отдел). */
+  spendByDepartment(fromDay: string, toDay: string): DepartmentSpendRow[] {
+    return this.spendByDepartmentStmt.all({ from: fromDay, to: toDay }) as DepartmentSpendRow[];
+  }
+
+  spendByEmployee(fromDay: string, toDay: string, departmentId?: number): EmployeeSpendRow[] {
+    return this.spendByEmployeeStmt.all({
+      from: fromDay,
+      to: toDay,
+      departmentId: departmentId ?? null,
+    }) as EmployeeSpendRow[];
+  }
+
+  spendByAgentToken(fromDay: string, toDay: string): AgentTokenSpendRow[] {
+    return this.spendByAgentTokenStmt.all({ from: fromDay, to: toDay }) as AgentTokenSpendRow[];
+  }
+
+  spendByProvider(fromDay: string, toDay: string): ProviderSpendRow[] {
+    return this.spendByProviderStmt.all({ from: fromDay, to: toDay }) as ProviderSpendRow[];
+  }
+
+  /** Расход контура сайтов по токенам: какой токен клиента жив и сколько тратит (для ротации). */
+  spendBySiteToken(fromDay: string, toDay: string): SiteTokenSpendRow[] {
+    return this.spendBySiteTokenStmt.all({ from: fromDay, to: toDay }) as SiteTokenSpendRow[];
+  }
+
+  spendByDayDepartment(fromDay: string, toDay: string): DayDepartmentSpendRow[] {
+    return this.spendByDayDepartmentStmt.all({ from: fromDay, to: toDay }) as DayDepartmentSpendRow[];
   }
 
   getMeta(key: string): string | null {
