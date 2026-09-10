@@ -14,14 +14,15 @@ const createBody = z.object({
   principalType: z.enum(['department', 'employee']),
   departmentId: z.number().int().positive().optional(),
   employeeId: z.number().int().positive().optional(),
-  label: z.string().trim().max(100).optional(),
+  // null — «метка очищена» (так шлёт интерфейс), хранится как пустая строка.
+  label: z.string().trim().max(100).nullable().optional(),
   providerId: z.number().int().positive().nullable().optional(),
   model: modelSlug.nullable().optional(),
   expiresAt: z.number().int().positive().nullable().optional(),
   allowedCidrs: cidrs.optional(),
 }).strict();
 const patchBody = z.object({
-  label: z.string().trim().max(100).optional(),
+  label: z.string().trim().max(100).nullable().optional(),
   providerId: z.number().int().positive().nullable().optional(),
   model: modelSlug.nullable().optional(),
   expiresAt: z.number().int().positive().nullable().optional(),
@@ -155,7 +156,7 @@ export async function registerAgentTokenRoutes(app: FastifyInstance, ctx: AdminC
     const issues = checkTarget(ctx, targetTouched ? { ...b, providerId: b.providerId ?? null, model: b.model ?? null } : { allowedCidrs: b.allowedCidrs, expiresAt: b.expiresAt });
     if (issues.length) return sendError(reply, 400, 'invalid_request', 'validation failed', { issues });
     const patch: AgentTokenPatch = {};
-    if (b.label !== undefined) patch.label = b.label;
+    if (b.label !== undefined) patch.label = b.label ?? '';
     if (targetTouched) {
       patch.provider_id = b.providerId ?? null;
       patch.model = b.model ?? null;

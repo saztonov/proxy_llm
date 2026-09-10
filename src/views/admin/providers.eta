@@ -1,0 +1,76 @@
+<% layout('./layout') %>
+<div class="page-head">
+  <h1>Провайдеры</h1>
+  <div class="page-actions">
+    <button id="btn-prov-reload" type="button" class="btn">Обновить</button>
+    <button id="btn-prov-add" type="button" class="btn btn-primary">Добавить провайдера</button>
+  </div>
+</div>
+<p class="muted">OpenAI-совместимые апстримы для агентского контура. Ключи и значения заголовков сервер не возвращает — видны только отпечаток ключа и имена заголовков.</p>
+<div id="prov-error" class="form-error hidden" role="alert"></div>
+<div class="table-wrap">
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>Название</th><th>Base URL</th><th>Ключ</th><th>Доп. заголовки</th><th>Учёт usage</th>
+        <th class="num">Одновременных</th><th>Статус</th><th class="num">Активных ключей</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="prov-tbody">
+      <tr><td colspan="9" class="muted">Загрузка…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<dialog id="dlg-prov" class="dlg-wide" aria-labelledby="dlg-prov-title">
+  <form id="form-prov" novalidate>
+    <h2 id="dlg-prov-title">Провайдер</h2>
+    <div class="form-error hidden" role="alert"></div>
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="prov-name">Название</label>
+        <input id="prov-name" name="name" type="text" required maxlength="100" autocomplete="off">
+      </div>
+      <div class="form-row">
+        <label for="prov-baseUrl">Base URL</label>
+        <input id="prov-baseUrl" name="baseUrl" type="url" class="mono" required maxlength="500" autocomplete="off" spellcheck="false" placeholder="https://example.com/api/v1">
+      </div>
+      <div class="form-row form-row-wide">
+        <label for="prov-apiKey">API-ключ</label>
+        <input id="prov-apiKey" name="apiKey" type="password" class="mono" autocomplete="new-password" spellcheck="false">
+        <small class="hint" id="prov-apiKey-hint">Необязательно.</small>
+      </div>
+      <div class="form-row form-row-check hidden" id="prov-removeKey-row">
+        <label class="check"><input type="checkbox" name="removeApiKey"> Удалить ключ</label>
+      </div>
+      <div class="form-row form-row-wide">
+        <label for="prov-extraHeaders">Дополнительные заголовки (по одному в строке, «Имя: значение»)</label>
+        <textarea id="prov-extraHeaders" name="extraHeaders" rows="3" class="mono" spellcheck="false" placeholder="X-Title: proxy_llm"></textarea>
+        <small class="hint" id="prov-extraHeaders-hint"></small>
+      </div>
+      <div class="form-row form-row-check hidden" id="prov-clearHeaders-row">
+        <label class="check"><input type="checkbox" name="clearHeaders"> Удалить все дополнительные заголовки</label>
+      </div>
+      <div class="form-row">
+        <label for="prov-usageMode">Учёт usage</label>
+        <select id="prov-usageMode" name="usageMode">
+          <option value="auto">auto — определить автоматически</option>
+          <option value="openrouter">openrouter — usage: {include: true}</option>
+          <option value="stream_options">stream_options — include_usage</option>
+          <option value="none">none — не запрашивать</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="prov-maxConcurrency">Одновременных запросов</label>
+        <input id="prov-maxConcurrency" name="maxConcurrency" type="number" min="1" step="1" inputmode="numeric" placeholder="без лимита">
+      </div>
+      <div class="form-row edit-only form-row-check">
+        <label class="check"><input type="checkbox" name="enabled"> Провайдер включён</label>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="same-origin">
+<meta name="robots" content="noindex, nofollow">
+<title><%= it.title %> — proxy_llm</title>
+<link rel="stylesheet" href="/admin/static/admin.css?v=<%= it.assetVersion %>">
+<script src="/admin/static/admin.js?v=<%= it.assetVersion %>" defer></script>
+</head>
+<body data-page="<%= it.page %>" <% if (it.next) { %>data-next="<%= it.next %>"<% } %>>
+<% if (it.page !== 'login') { %>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/admin">proxy_llm</a>
+    <nav class="nav" aria-label="Разделы">
+<%
+  const navLinks = [
+    ['/admin', 'Сводка', 'home'],
+    ['/admin/sites', 'Сайты', 'sites'],
+    ['/admin/directory', 'Справочник', 'directory'],
+    ['/admin/providers', 'Провайдеры', 'providers'],
+    ['/admin/agent-tokens', 'Агентские ключи', 'agent-tokens'],
+    ['/admin/stats', 'Статистика', 'stats'],
+    ['/admin/requests', 'Запросы', 'requests'],
+    ['/admin/audit', 'Аудит', 'audit'],
+    ['/admin/settings', 'Настройки', 'settings'],
+  ];
+%>
+<% navLinks.forEach(function (l) { %>
+<% if (it.page === l[2]) { %>
+      <a href="<%= l[0] %>" class="active" aria-current="page"><%= l[1] %></a>
+<% } else { %>
+      <a href="<%= l[0] %>"><%= l[1] %></a>
+<% } %>
+<% }) %>
+    </nav>
+    <div class="who">
+      <span id="who" class="muted"></span>
+      <button id="btn-logout" type="button" class="btn btn-small">Выйти</button>
+    </div>
+  </div>
+</header>
+<% } %>
+<main>
+<%~ it.body %>
+</main>
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+<dialog id="dlg-secret" class="dlg-secret" aria-labelledby="dlg-secret-title">
+  <h2 id="dlg-secret-title">Токен выпущен</h2>
+  <div class="secret-row">
+    <input id="dlg-secret-value" class="mono" type="text" readonly autocomplete="off" spellcheck="false" aria-label="Токен">
+    <button id="dlg-secret-copy" type="button" class="btn">Скопировать</button>
+  </div>
+  <div id="dlg-secret-hint" class="secret-hint"></div>
+  <p class="warn-text">Токен показан один раз и больше не будет доступен.</p>
+  <div class="dialog-actions">
+    <button id="dlg-secret-close" type="button" class="btn btn-primary">Я сохранил, закрыть</button>
+  </div>
+</dialog>
+</body>
+</html>

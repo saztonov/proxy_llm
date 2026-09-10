@@ -1,0 +1,62 @@
+<% layout('./layout') %>
+<div class="page-head">
+  <h1>Статистика расходов</h1>
+</div>
+
+<form id="form-stats" class="filters" novalidate>
+  <div class="form-error hidden" role="alert"></div>
+  <div class="form-row">
+    <label for="stats-from">С</label>
+    <input id="stats-from" name="from" type="date" required>
+  </div>
+  <div class="form-row">
+    <label for="stats-to">По</label>
+    <input id="stats-to" name="to" type="date" required>
+  </div>
+  <div class="form-row">
+    <label for="stats-by">Группировка</label>
+    <select id="stats-by" name="by">
+      <option value="client">по клиентам</option>
+      <option value="model">по моделям</option>
+      <option value="department">по отделам</option>
+      <option value="employee">по сотрудникам</option>
+      <option value="agent-token">по агентским ключам</option>
+      <option value="provider">по провайдерам</option>
+      <option value="site-token">по токенам сайтов</option>
+      <option value="day-client">по дням и клиентам</option>
+      <option value="day-department">по дням и отделам</option>
+    </select>
+  </div>
+  <div class="form-row">
+    <label for="stats-contour">Контур</label>
+    <select id="stats-contour" name="contour">
+      <option value="">все</option>
+      <option value="site">сайты</option>
+      <option value="agent">агенты</option>
+    </select>
+  </div>
+  <div class="form-row form-row-btn">
+    <button type="submit" class="btn btn-primary">Показать</button>
+  </div>
+</form>
+
+<p id="stats-meta" class="muted"></p>
+<div class="table-wrap">
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>Группа</th>
+        <th class="num">Выполнений</th>
+        <th class="num">Попыток</th>
+        <th class="num">Токены вход</th>
+        <th class="num">Токены выход</th>
+        <th class="num">Факт $</th>
+        <th class="num">≈ Оценка $</th>
+        <th class="num">Без стоимости</th>
+      </tr>
+    </thead>
+    <tbody id="stats-tbody"></tbody>
+    <tfoot id="stats-tfoot"></tfoot>
+  </table>
+</div>
+<p class="muted small">Факт — сумма, списанная провайдером; ≈ — каталожная оценка для попыток без факта.</p>

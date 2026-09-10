@@ -1,0 +1,140 @@
+<% layout('./layout') %>
+<div class="page-head">
+  <h1>Сайты</h1>
+  <div class="page-actions">
+    <button id="btn-sites-reload" type="button" class="btn">Обновить</button>
+    <button id="btn-site-add" type="button" class="btn btn-primary">Добавить сайт</button>
+  </div>
+</div>
+<p class="muted">Порталы, которые обращаются к прокси по токену сайта. Пустые поля политики наследуют значения по умолчанию из окружения.</p>
+<div id="sites-defaults" class="defaults-box"></div>
+<div id="sites-error" class="form-error hidden" role="alert"></div>
+<div class="table-wrap">
+  <table class="grid" id="sites-table">
+    <thead>
+      <tr>
+        <th>Клиент</th>
+        <th>Статус</th>
+        <th>Модель по умолчанию</th>
+        <th>Выбор модели</th>
+        <th>Fallback</th>
+        <th>Нагрузка</th>
+        <th>Ключ OpenRouter</th>
+        <th>Токены</th>
+        <th>Обновлён</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="sites-tbody">
+      <tr><td colspan="10" class="muted">Загрузка…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<dialog id="dlg-site" class="dlg-wide" aria-labelledby="dlg-site-title">
+  <form id="form-site" novalidate>
+    <h2 id="dlg-site-title">Сайт</h2>
+    <div class="form-error hidden" role="alert"></div>
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="site-clientId">Идентификатор клиента (clientId)</label>
+        <input id="site-clientId" name="clientId" type="text" class="mono" required maxlength="64" autocomplete="off" spellcheck="false" data-immutable>
+        <small class="hint">После создания не меняется.</small>
+      </div>
+      <div class="form-row">
+        <label for="site-source">Источник / заметка</label>
+        <input id="site-source" name="source" type="text" maxlength="200" autocomplete="off">
+      </div>
+      <div class="form-row edit-only form-row-check">
+        <label class="check"><input type="checkbox" name="enabled"> Сайт включён</label>
+      </div>
+    </div>
+
+    <h3>Модели</h3>
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="site-defaultModel">Модель по умолчанию</label>
+        <input id="site-defaultModel" name="defaultModel" type="text" class="mono" autocomplete="off" spellcheck="false">
+        <small class="hint" id="site-defaultModel-hint">Пусто — наследовать.</small>
+      </div>
+      <div class="form-row">
+        <label for="site-allowedMode">Выбор модели клиентом</label>
+        <select id="site-allowedMode" name="allowedMode">
+          <option value="inherit">Наследовать</option>
+          <option value="default">Только модель по умолчанию</option>
+          <option value="any">Любая модель</option>
+          <option value="list">Список</option>
+        </select>
+        <small class="hint" id="site-allowedMode-hint"></small>
+      </div>
+      <div class="form-row form-row-wide hidden" id="site-allowedModels-row">
+        <label for="site-allowedModels">Разрешённые модели (по одной в строке)</label>
+        <textarea id="site-allowedModels" name="allowedModels" rows="4" class="mono" spellcheck="false"></textarea>
+      </div>
+      <div class="form-row">
+        <label for="site-fallbackMode">Fallback-модели</label>
+        <select id="site-fallbackMode" name="fallbackMode">
+          <option value="inherit">Наследовать</option>
+          <option value="none">Без fallback</option>
+          <option value="list">Список</option>
+        </select>
+        <small class="hint" id="site-fallbackMode-hint"></small>
+      </div>
+      <div class="form-row form-row-wide hidden" id="site-fallbackModels-row">
+        <label for="site-fallbackModels">Fallback-модели по порядку (по одной в строке)</label>
+        <textarea id="site-fallbackModels" name="fallbackModels" rows="3" class="mono" spellcheck="false"></textarea>
+      </div>
+    </div>
+
+    <h3>Лимиты и ключ</h3>
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="site-maxConcurrency">Одновременных запросов</label>
+        <input id="site-maxConcurrency" name="maxConcurrency" type="number" min="1" step="1" inputmode="numeric">
+      </div>
+      <div class="form-row">
+        <label for="site-maxPending">Размер очереди</label>
+        <input id="site-maxPending" name="maxPending" type="number" min="0" step="1" inputmode="numeric">
+      </div>
+      <div class="form-row form-row-wide">
+        <label for="site-openrouterApiKey">Собственный ключ OpenRouter</label>
+        <input id="site-openrouterApiKey" name="openrouterApiKey" type="password" class="mono" autocomplete="new-password" spellcheck="false">
+        <small class="hint" id="site-openrouterApiKey-hint">Пусто — общий ключ прокси.</small>
+      </div>
+      <div class="form-row form-row-check hidden" id="site-removeKey-row">
+        <label class="check"><input type="checkbox" name="removeOpenrouterApiKey"> Удалить свой ключ (использовать общий)</label>
+      </div>
+    </div>
+
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-site-tokens" class="dlg-wide" aria-labelledby="dlg-site-tokens-title">
+  <h2 id="dlg-site-tokens-title">Токены сайта</h2>
+  <label class="check"><input type="checkbox" id="site-tokens-show-revoked"> Показывать отозванные</label>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr><th>Токен</th><th>Метка</th><th>Создан</th><th>Использован</th><th>Статус</th><th></th></tr>
+      </thead>
+      <tbody id="site-tokens-tbody"></tbody>
+    </table>
+  </div>
+  <form id="form-site-token" class="inline-form" novalidate>
+    <div class="form-error hidden" role="alert"></div>
+    <div class="form-row">
+      <label for="site-token-label">Метка нового токена</label>
+      <input id="site-token-label" name="label" type="text" maxlength="100" autocomplete="off" placeholder="например, prod">
+    </div>
+    <div class="form-row form-row-btn">
+      <button type="submit" class="btn btn-primary">Выпустить токен</button>
+    </div>
+  </form>
+  <div class="dialog-actions">
+    <button type="button" class="btn" data-close>Закрыть</button>
+  </div>
+</dialog>

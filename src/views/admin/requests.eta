@@ -1,0 +1,58 @@
+<% layout('./layout') %>
+<div class="page-head">
+  <h1>Запросы</h1>
+</div>
+
+<form id="form-req-filter" class="filters" novalidate>
+  <div class="form-error hidden" role="alert"></div>
+  <div class="form-row">
+    <label for="req-contour">Контур</label>
+    <select id="req-contour" name="contour">
+      <option value="">все</option>
+      <option value="site">сайты</option>
+      <option value="agent">агенты</option>
+    </select>
+  </div>
+  <div class="form-row">
+    <label for="req-clientId">Клиент</label>
+    <input id="req-clientId" name="clientId" type="text" class="mono" autocomplete="off" spellcheck="false">
+  </div>
+  <div class="form-row">
+    <label for="req-tokenId">ID токена</label>
+    <input id="req-tokenId" name="tokenId" type="text" class="mono" autocomplete="off" spellcheck="false">
+  </div>
+  <div class="form-row">
+    <label for="req-departmentId">Отдел</label>
+    <select id="req-departmentId" name="departmentId"><option value="">все</option></select>
+  </div>
+  <div class="form-row">
+    <label for="req-employeeId">Сотрудник</label>
+    <select id="req-employeeId" name="employeeId"><option value="">все</option></select>
+  </div>
+  <div class="form-row">
+    <label for="req-limit">Строк</label>
+    <select id="req-limit" name="limit">
+      <option value="50">50</option>
+      <option value="100" selected>100</option>
+      <option value="200">200</option>
+      <option value="500">500</option>
+    </select>
+  </div>
+  <div class="form-row form-row-btn">
+    <button type="submit" class="btn btn-primary">Показать</button>
+  </div>
+</form>
+
+<div class="table-wrap">
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="num">#</th><th>Получен</th><th>Контур</th><th>Клиент</th><th>Токен</th>
+        <th>Модель</th><th>Статус</th><th class="num">HTTP</th><th class="num">Латентность</th>
+        <th class="num">Вход</th><th class="num">Выход</th><th class="num">Стоимость</th><th>Ошибка</th>
+      </tr>
+    </thead>
+    <tbody id="req-tbody"></tbody>
+  </table>
+</div>
+<p class="muted small">Метка «dedup» — запрос присоединился к уже выполняющемуся с тем же ключом идемпотентности.</p>

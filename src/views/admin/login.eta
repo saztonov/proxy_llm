@@ -1,0 +1,20 @@
+<% layout('./layout') %>
+<section class="login-box">
+  <h1 class="login-title">proxy_llm</h1>
+  <p class="muted">Вход в панель администратора</p>
+  <p id="login-checking" class="muted">Проверка сессии…</p>
+  <form id="form-login" class="hidden" novalidate>
+    <div class="form-error hidden" role="alert"></div>
+    <div class="form-row">
+      <label for="login-login">Логин</label>
+      <input id="login-login" name="login" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+    </div>
+    <div class="form-row">
+      <label for="login-password">Пароль</label>
+      <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary btn-block">Войти</button>
+    </div>
+  </form>
+</section>

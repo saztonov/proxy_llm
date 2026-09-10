@@ -1,0 +1,72 @@
+<% layout('./layout') %>
+<div class="page-head">
+  <h1>Настройки</h1>
+</div>
+
+<section class="section">
+  <h2>Агентский контур: значения по умолчанию</h2>
+  <p class="muted">Применяются к ключам без назначенной модели и к отделам/сотрудникам без своих лимитов.</p>
+  <form id="form-agent-defaults" class="panel" novalidate>
+    <div class="form-error hidden" role="alert"></div>
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="set-providerId">Провайдер</label>
+        <select id="set-providerId" name="providerId"><option value="">— не задан —</option></select>
+      </div>
+      <div class="form-row">
+        <label for="set-model">Модель</label>
+        <input id="set-model" name="model" type="text" class="mono" maxlength="200" autocomplete="off" spellcheck="false">
+        <small class="hint">Провайдер и модель задаются вместе.</small>
+      </div>
+      <div class="form-row">
+        <label for="set-maxConcurrency">Одновременных запросов на владельца</label>
+        <input id="set-maxConcurrency" name="maxConcurrency" type="number" min="1" step="1" inputmode="numeric">
+        <small class="hint" id="set-maxConcurrency-hint"></small>
+      </div>
+      <div class="form-row">
+        <label for="set-maxPending">Очередь на владельца</label>
+        <input id="set-maxPending" name="maxPending" type="number" min="0" step="1" inputmode="numeric">
+        <small class="hint" id="set-maxPending-hint"></small>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</section>
+
+<section class="section">
+  <h2>Параметры окружения</h2>
+  <p class="muted">Задаются переменными окружения сервера, здесь только для чтения.</p>
+  <div class="table-wrap">
+    <table class="grid grid-kv">
+      <tbody id="set-env-tbody">
+        <tr><td class="muted">Загрузка…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section">
+  <h2>Смена пароля</h2>
+  <p class="muted">После смены пароля все сессии будут завершены, потребуется войти заново.</p>
+  <form id="form-password" class="panel panel-narrow" novalidate>
+    <div class="form-error hidden" role="alert"></div>
+    <div class="form-row">
+      <label for="pw-current">Текущий пароль</label>
+      <input id="pw-current" name="current" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="form-row">
+      <label for="pw-next">Новый пароль</label>
+      <input id="pw-next" name="next" type="password" autocomplete="new-password" minlength="12" required>
+      <small class="hint">Не короче 12 символов.</small>
+    </div>
+    <div class="form-row">
+      <label for="pw-next2">Новый пароль ещё раз</label>
+      <input id="pw-next2" name="next2" type="password" autocomplete="new-password" minlength="12" required>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Сменить пароль</button>
+    </div>
+  </form>
+</section>

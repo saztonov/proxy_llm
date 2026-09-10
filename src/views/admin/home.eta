@@ -1,0 +1,47 @@
+<% layout('./layout') %>
+<div class="page-head">
+  <h1>Сводка</h1>
+  <div class="page-actions">
+    <span id="summary-generated" class="muted"></span>
+    <button id="btn-summary-reload" type="button" class="btn">Обновить</button>
+  </div>
+</div>
+<div id="summary-error" class="form-error hidden" role="alert"></div>
+
+<section class="section">
+  <h2>Трафик</h2>
+  <div id="summary-traffic" class="cards"></div>
+</section>
+
+<section class="section">
+  <h2>Нагрузка сейчас</h2>
+  <div id="summary-fairness" class="cards"></div>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr><th>Контур</th><th>Клиент</th><th class="num">Активно</th><th class="num">Конкурентность</th><th class="num">Очередь (макс.)</th></tr>
+      </thead>
+      <tbody id="summary-perclient"></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section">
+  <h2>Расходы</h2>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Период</th>
+          <th class="num">Сайты, факт</th><th class="num">Сайты, ≈</th>
+          <th class="num">Агенты, факт</th><th class="num">Агенты, ≈</th>
+          <th class="num">Всего, факт</th><th class="num">Всего, ≈</th>
+          <th class="num">Выполнений</th><th class="num">Без стоимости</th>
+        </tr>
+      </thead>
+      <tbody id="summary-spend"></tbody>
+    </table>
+  </div>
+  <p class="muted small">Факт — сумма, списанная провайдером; ≈ — каталожная оценка для попыток без факта.</p>
+  <p id="summary-meta" class="muted small"></p>
+</section>

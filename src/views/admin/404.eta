@@ -1,0 +1,6 @@
+<% layout('./layout') %>
+<section class="empty-page">
+  <h1>Страница не найдена</h1>
+  <p class="muted">Такого раздела в панели нет или адрес набран с ошибкой.</p>
+  <p><a class="btn" href="/admin">На сводку</a></p>
+</section>

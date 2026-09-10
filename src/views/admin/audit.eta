@@ -1,0 +1,22 @@
+<% layout('./layout') %>
+<div class="page-head">
+  <h1>Аудит действий</h1>
+  <div class="page-actions">
+    <button id="btn-audit-reload" type="button" class="btn">Обновить</button>
+  </div>
+</div>
+<div id="audit-error" class="form-error hidden" role="alert"></div>
+<div class="table-wrap">
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="num">#</th><th>Время</th><th>Администратор</th><th>IP</th>
+        <th>Действие</th><th>Объект</th><th>Детали</th>
+      </tr>
+    </thead>
+    <tbody id="audit-tbody"></tbody>
+  </table>
+</div>
+<div class="more-row">
+  <button id="btn-audit-more" type="button" class="btn hidden">Ещё</button>
+</div>

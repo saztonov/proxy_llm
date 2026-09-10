@@ -1,0 +1,95 @@
+<% layout('./layout') %>
+<div class="page-head">
+  <h1>Агентские ключи</h1>
+  <div class="page-actions">
+    <button id="btn-at-add" type="button" class="btn btn-primary">Выпустить ключ</button>
+  </div>
+</div>
+<p class="muted">Ключи для агентов (Cursor и др.). Base URL для агентов: <span id="at-base-url" class="mono">—</span></p>
+
+<form id="form-at-filter" class="filters" novalidate>
+  <div class="form-row">
+    <label for="at-filter-dept">Отдел</label>
+    <select id="at-filter-dept" name="departmentId"><option value="">Все отделы</option></select>
+  </div>
+  <div class="form-row">
+    <label for="at-filter-emp">Сотрудник</label>
+    <select id="at-filter-emp" name="employeeId"><option value="">Все сотрудники</option></select>
+  </div>
+  <div class="form-row form-row-check">
+    <label class="check"><input type="checkbox" name="includeRevoked"> Показывать отозванные</label>
+  </div>
+  <div class="form-row form-row-btn">
+    <button type="submit" class="btn">Показать</button>
+  </div>
+</form>
+
+<div id="at-error" class="form-error hidden" role="alert"></div>
+<div class="table-wrap">
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>Ключ</th><th>Метка</th><th>Владелец</th><th>Модель</th><th>Истекает</th>
+        <th>Сети (CIDR)</th><th>Статус</th><th>Создан</th><th>Использован</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="at-tbody">
+      <tr><td colspan="10" class="muted">Загрузка…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<dialog id="dlg-at" class="dlg-wide" aria-labelledby="dlg-at-title">
+  <form id="form-at" novalidate>
+    <h2 id="dlg-at-title">Агентский ключ</h2>
+    <div class="form-error hidden" role="alert"></div>
+    <p class="edit-only muted">Владелец: <span id="at-owner"></span></p>
+    <div class="form-grid">
+      <div class="form-row create-only">
+        <label for="at-principalType">Владелец ключа</label>
+        <select id="at-principalType" name="principalType">
+          <option value="employee">Сотрудник</option>
+          <option value="department">Отдел целиком</option>
+        </select>
+      </div>
+      <div class="form-row create-only">
+        <label for="at-departmentId">Отдел</label>
+        <select id="at-departmentId" name="departmentId"></select>
+      </div>
+      <div class="form-row create-only" id="at-employee-row">
+        <label for="at-employeeId">Сотрудник</label>
+        <select id="at-employeeId" name="employeeId"></select>
+      </div>
+      <div class="form-row">
+        <label for="at-label">Метка</label>
+        <input id="at-label" name="label" type="text" maxlength="100" autocomplete="off" placeholder="например, ноутбук">
+      </div>
+      <div class="form-row">
+        <label for="at-providerId">Провайдер</label>
+        <select id="at-providerId" name="providerId"></select>
+        <small class="hint">Провайдер и модель задаются только вместе. Пусто — глобальный дефолт из настроек.</small>
+      </div>
+      <div class="form-row">
+        <label for="at-model">Модель</label>
+        <input id="at-model" name="model" type="text" class="mono" maxlength="200" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="form-row">
+        <label for="at-expiresAt">Действует до</label>
+        <input id="at-expiresAt" name="expiresAt" type="datetime-local">
+        <small class="hint">Пусто — бессрочно. Время локальное.</small>
+      </div>
+      <div class="form-row form-row-wide">
+        <label for="at-allowedCidrs">Разрешённые сети (CIDR, по одной в строке)</label>
+        <textarea id="at-allowedCidrs" name="allowedCidrs" rows="3" class="mono" spellcheck="false" placeholder="10.0.0.0/8"></textarea>
+        <small class="hint">Пусто — без ограничения по адресу.</small>
+      </div>
+      <div class="form-row edit-only form-row-check">
+        <label class="check"><input type="checkbox" name="enabled"> Ключ включён</label>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>

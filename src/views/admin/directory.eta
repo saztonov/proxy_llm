@@ -1,0 +1,129 @@
+<% layout('./layout') %>
+<div class="page-head">
+  <h1>Справочник</h1>
+  <div class="page-actions">
+    <button id="btn-dir-reload" type="button" class="btn">Обновить</button>
+  </div>
+</div>
+<p class="muted">Отделы и сотрудники — владельцы агентских ключей. Пустые лимиты берутся из настроек по умолчанию.</p>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Отделы</h2>
+    <button id="btn-dept-add" type="button" class="btn btn-primary">Добавить отдел</button>
+  </div>
+  <div id="depts-error" class="form-error hidden" role="alert"></div>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Slug</th><th>Название</th><th>Статус</th>
+          <th class="num">Одновременных</th><th class="num">Очередь</th>
+          <th class="num">Сотрудников</th><th class="num">Активных ключей</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="depts-tbody">
+        <tr><td colspan="8" class="muted">Загрузка…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Сотрудники</h2>
+    <div class="page-actions">
+      <label class="inline-label" for="emp-filter-dept">Отдел</label>
+      <select id="emp-filter-dept"><option value="">Все отделы</option></select>
+      <button id="btn-emp-add" type="button" class="btn btn-primary">Добавить сотрудника</button>
+    </div>
+  </div>
+  <div id="emps-error" class="form-error hidden" role="alert"></div>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Логин</th><th>Имя</th><th>Email</th><th>Отдел</th><th>Статус</th>
+          <th class="num">Одновременных</th><th class="num">Очередь</th><th class="num">Активных ключей</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="emps-tbody">
+        <tr><td colspan="9" class="muted">Загрузка…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<dialog id="dlg-dept" aria-labelledby="dlg-dept-title">
+  <form id="form-dept" novalidate>
+    <h2 id="dlg-dept-title">Отдел</h2>
+    <div class="form-error hidden" role="alert"></div>
+    <div class="form-row">
+      <label for="dept-slug">Slug</label>
+      <input id="dept-slug" name="slug" type="text" class="mono" required maxlength="64" autocomplete="off" spellcheck="false" data-immutable>
+      <small class="hint">Короткий латинский идентификатор. После создания не меняется.</small>
+    </div>
+    <div class="form-row">
+      <label for="dept-name">Название</label>
+      <input id="dept-name" name="name" type="text" required maxlength="200" autocomplete="off">
+    </div>
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="dept-maxConcurrency">Одновременных запросов</label>
+        <input id="dept-maxConcurrency" name="maxConcurrency" type="number" min="1" step="1" inputmode="numeric">
+      </div>
+      <div class="form-row">
+        <label for="dept-maxPending">Размер очереди</label>
+        <input id="dept-maxPending" name="maxPending" type="number" min="0" step="1" inputmode="numeric">
+      </div>
+    </div>
+    <div class="form-row edit-only form-row-check">
+      <label class="check"><input type="checkbox" name="enabled"> Отдел включён</label>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-emp" aria-labelledby="dlg-emp-title">
+  <form id="form-emp" novalidate>
+    <h2 id="dlg-emp-title">Сотрудник</h2>
+    <div class="form-error hidden" role="alert"></div>
+    <div class="form-row">
+      <label for="emp-login">Логин</label>
+      <input id="emp-login" name="login" type="text" class="mono" required maxlength="64" autocomplete="off" spellcheck="false" data-immutable>
+      <small class="hint">После создания не меняется.</small>
+    </div>
+    <div class="form-row">
+      <label for="emp-displayName">Имя</label>
+      <input id="emp-displayName" name="displayName" type="text" required maxlength="200" autocomplete="off">
+    </div>
+    <div class="form-row">
+      <label for="emp-email">Email</label>
+      <input id="emp-email" name="email" type="email" maxlength="200" autocomplete="off">
+    </div>
+    <div class="form-row">
+      <label for="emp-departmentId">Отдел</label>
+      <select id="emp-departmentId" name="departmentId" required></select>
+    </div>
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="emp-maxConcurrency">Одновременных запросов</label>
+        <input id="emp-maxConcurrency" name="maxConcurrency" type="number" min="1" step="1" inputmode="numeric">
+      </div>
+      <div class="form-row">
+        <label for="emp-maxPending">Размер очереди</label>
+        <input id="emp-maxPending" name="maxPending" type="number" min="0" step="1" inputmode="numeric">
+      </div>
+    </div>
+    <div class="form-row edit-only form-row-check">
+      <label class="check"><input type="checkbox" name="enabled"> Сотрудник активен</label>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
