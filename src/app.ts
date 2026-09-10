@@ -36,6 +36,10 @@ export interface AppBundle {
   stopDigest: () => void;
   stopFairnessReconciler: () => void;
   stopPriceSync: () => void;
+  /** Все тикеры разом (остановка сервиса). */
+  stopTickers: () => void;
+  /** Живые запросы всех контуров — для drain и abortAll при остановке. */
+  activeSources: ActiveMetrics[];
 }
 
 export async function buildApp(config: Config): Promise<AppBundle> {
@@ -156,5 +160,12 @@ export async function buildApp(config: Config): Promise<AppBundle> {
     stopDigest,
     stopFairnessReconciler,
     stopPriceSync,
+    stopTickers: () => {
+      stopWatchdog();
+      stopDigest();
+      stopFairnessReconciler();
+      stopPriceSync();
+    },
+    activeSources: [activeMetrics],
   };
 }

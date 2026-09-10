@@ -15,6 +15,17 @@ export interface Payer {
   fingerprint: string;
 }
 
+/**
+ * Агентский контур: платит аккаунт провайдера. scope — имя провайдера из справочника,
+ * отпечаток ключа различает аккаунты и ротации ключа (как у сайтов).
+ */
+export function payerForProvider(providerName: string, apiKey: string | null): Payer {
+  return {
+    scope: `provider:${providerName}`,
+    fingerprint: apiKey ? createHash('sha256').update(apiKey, 'utf8').digest('hex').slice(0, 16) : 'no-key',
+  };
+}
+
 export function resolvePayer(client: ClientConfig, globalApiKey: string): Payer {
   const key = client.openrouterApiKey ?? globalApiKey;
   return {

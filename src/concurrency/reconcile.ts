@@ -1,5 +1,5 @@
 import type { FairnessManager } from './fairness.js';
-import type { ActiveMetrics } from '../routes/chat-completions.js';
+import type { ActiveMetrics } from './active-metrics.js';
 import type { Logger } from '../utils/logger.js';
 
 /** Сколько подряд тиков превышение должно держаться, чтобы считаться утечкой. */

@@ -1,59 +1,13 @@
-import { request as undiciRequest, errors as undiciErrors } from 'undici';
 import type { Config } from '../config.js';
 import { createDeadline, type Deadline } from './deadline.js';
-import {
-  classifyHttp,
-  computeBackoffMs,
-  type Classification,
-} from './retry.js';
-import { parseRetryAfterMs } from './parse-retry-after.js';
-import {
-  readBodyWithLimit,
-  safeParseJson,
-  UpstreamResponseTooLargeError,
-} from './read-body-with-limit.js';
-import { filterResponseHeaders, type FilteredHeaders } from './filter-response-headers.js';
+import { filterResponseHeaders } from './filter-response-headers.js';
 import { buildUpstreamPayload } from './sanitize-payload.js';
 import type { ModelResolution } from './resolve-model.js';
-import { normalizeUsage, hasCost, type NormalizedUsage } from './usage.js';
-import { sanitizeErrorForLog } from '../utils/sanitize-error.js';
 import type { Logger } from '../utils/logger.js';
+import { runChatAttempts, siteErrorBody, type AttemptPolicy } from './chat-attempt-loop.js';
+import type { AttemptObservation, ProxyResult } from './types.js';
 
-/**
- * Наблюдение за одной фактической попыткой обращения к OpenRouter.
- *
- * Отдаётся колбэком сразу после попытки — ДО решения о ретрае, чтобы оплаченная, но
- * отброшенная попытка не потерялась (в том числе при падении процесса). Клиент остаётся
- * storage-agnostic: писать наблюдение в БД — дело вызывающего.
- */
-export interface AttemptObservation {
-  attemptNo: number;
-  tsStarted: number;
-  tsCompleted: number;
-  httpStatus: number | null;
-  classification: Classification['kind'];
-  modelUsed?: string;
-  upstreamId?: string;
-  usage?: NormalizedUsage;
-  /** 'response' — usage.cost получен; 'missing' — тело не разобрано либо cost не пришёл. */
-  usageSource: 'response' | 'missing';
-}
-
-export interface ProxyResult {
-  statusCode: number;
-  headers: FilteredHeaders;
-  bodyText: string;
-  usage?: NormalizedUsage;
-  modelUsed?: string;
-  upstreamId?: string;
-  classification: Classification['kind'];
-  /** best-effort: 1=fallback, 0=primary, null=неоднозначно */
-  fallbackUsed: number | null;
-  attemptCount: number;
-  errorCode?: string;
-  errorMsg?: string;
-  retryAfterSeconds?: number;
-}
+export type { AttemptObservation, ProxyResult } from './types.js';
 
 export interface ExecuteOptions {
   incoming: Record<string, unknown>;
@@ -63,7 +17,7 @@ export interface ExecuteOptions {
   modelResolution: ModelResolution;
   /** Для логирования/атрибуции. */
   clientId?: string;
-  /** Внешний abort (watchdog/graceful) — доводится до undici-запроса. */
+  /** Внешний abort (watchdog/graceful/обрыв клиента) — доводится до undici-запроса. */
   signal?: AbortSignal;
   /** Per-tenant ключ OpenRouter; иначе глобальный OPENROUTER_API_KEY. */
   apiKey?: string;
@@ -74,139 +28,44 @@ export interface ExecuteOptions {
   onAttempt?: (obs: AttemptObservation) => void;
 }
 
+/** Клиент OpenRouter для контура сайтов: payload по политике клиента, без стриминга. */
 export class OpenRouterClient {
   private readonly endpoint: string;
+  private readonly policy: AttemptPolicy;
 
   constructor(
     private readonly config: Config,
     private readonly logger: Logger,
   ) {
     this.endpoint = `${config.OPENROUTER_BASE_URL.replace(/\/$/, '')}/api/v1/chat/completions`;
+    this.policy = {
+      maxAttempts: config.UPSTREAM_MAX_ATTEMPTS,
+      attemptTimeoutMs: config.UPSTREAM_ATTEMPT_TIMEOUT_MS,
+      minRemainingMs: config.MIN_REMAINING_MS,
+      responseBodyLimitBytes: config.UPSTREAM_RESPONSE_BODY_LIMIT_BYTES,
+    };
   }
 
   async execute(opts: ExecuteOptions): Promise<ProxyResult> {
     const deadline =
       opts.deadline ??
       createDeadline(Date.now(), this.config.REQUEST_DEADLINE_MS, this.config.MIN_REMAINING_MS);
-
     const upstreamPayload = buildUpstreamPayload(opts.incoming, opts.modelResolution);
-    const bodyJson = JSON.stringify(upstreamPayload);
 
-    let lastResult: ProxyResult | null = null;
-
-    for (let attempt = 1; attempt <= this.config.UPSTREAM_MAX_ATTEMPTS; attempt++) {
-      if (!deadline.hasTimeFor(0)) {
-        return this.makeDeadlineExceeded(opts.requestId, attempt - 1);
-      }
-
-      const attemptTimeoutMs = deadline.attemptTimeout(this.config.UPSTREAM_ATTEMPT_TIMEOUT_MS);
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), attemptTimeoutMs).unref();
-      // Внешний abort (watchdog/graceful) объединяем с per-attempt timeout — оба доводятся до undici.
-      const signal = opts.signal ? AbortSignal.any([ac.signal, opts.signal]) : ac.signal;
-      const tsStarted = Date.now();
-
-      try {
-        const res = await undiciRequest(this.endpoint, {
-          method: 'POST',
-          headers: this.buildUpstreamHeaders(opts.requestId, opts.apiKey),
-          body: bodyJson,
-          signal,
-        });
-
-        const bodyText = await readBodyWithLimit(
-          res.body,
-          this.config.UPSTREAM_RESPONSE_BODY_LIMIT_BYTES,
-        );
-        const parsed = safeParseJson(bodyText);
-        const classification = classifyHttp(res.statusCode, parsed);
-        const result = this.buildResultFromResponse(
-          res.statusCode,
-          res.headers as Record<string, string | string[] | undefined>,
-          bodyText,
-          parsed,
-          classification,
-          opts.requestId,
-          attempt,
-          opts.modelResolution,
-        );
-
-        this.emitAttempt(opts, {
-          attemptNo: attempt,
-          tsStarted,
-          tsCompleted: Date.now(),
-          httpStatus: res.statusCode,
-          classification: classification.kind,
-          ...(result.modelUsed ? { modelUsed: result.modelUsed } : {}),
-          ...(result.upstreamId ? { upstreamId: result.upstreamId } : {}),
-          ...(result.usage ? { usage: result.usage } : {}),
-          usageSource: hasCost(result.usage) ? 'response' : 'missing',
-        });
-
-        if (classification.kind === 'success') {
-          return result;
-        }
-
-        if (this.shouldRetry(classification, attempt, deadline)) {
-          const waitMs = this.waitMs(classification, res.headers, attempt);
-          if (!deadline.hasTimeFor(waitMs)) {
-            return result;
-          }
-          await sleep(waitMs);
-          lastResult = result;
-          continue;
-        }
-
-        return result;
-      } catch (err) {
-        clearTimeout(timer);
-        const result = this.buildResultFromError(err, opts.requestId, attempt);
-
-        // Тело не разобрано (обрыв, таймаут, слишком большой ответ) — генерация могла быть
-        // оплачена, но cost и generation ID нам недоступны. Это дыра покрытия по построению:
-        // пишем её явно, чтобы она была видна в отчётах, а не молча исчезала.
-        this.emitAttempt(opts, {
-          attemptNo: attempt,
-          tsStarted,
-          tsCompleted: Date.now(),
-          httpStatus: null,
-          classification: result.classification,
-          usageSource: 'missing',
-        });
-
-        if (result.classification === 'upstream_response_too_large') {
-          return result;
-        }
-
-        if (this.shouldRetry({ kind: 'network_error', retryable: true }, attempt, deadline)) {
-          const waitMs = computeBackoffMs(attempt);
-          if (!deadline.hasTimeFor(waitMs)) {
-            return result;
-          }
-          await sleep(waitMs);
-          lastResult = result;
-          continue;
-        }
-        return result;
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-
-    return lastResult ?? this.makeDeadlineExceeded(opts.requestId, this.config.UPSTREAM_MAX_ATTEMPTS);
-  }
-
-  /** Отдаёт наблюдение биллингу. Сбой учёта не должен ломать проксирование — гасим всё. */
-  private emitAttempt(opts: ExecuteOptions, obs: AttemptObservation): void {
-    if (!opts.onAttempt) return;
-    try {
-      opts.onAttempt(obs);
-    } catch (err) {
-      this.logger.warn(
-        { err: sanitizeErrorForLog(err), requestId: opts.requestId, attempt: obs.attemptNo },
-        'billing attempt sink failed',
-      );
-    }
+    return runChatAttempts({
+      endpoint: this.endpoint,
+      headers: this.buildUpstreamHeaders(opts.requestId, opts.apiKey),
+      bodyJson: JSON.stringify(upstreamPayload),
+      requestId: opts.requestId,
+      deadline,
+      policy: this.policy,
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.onAttempt ? { onAttempt: opts.onAttempt } : {}),
+      fallbackUsed: (modelUsed) => computeFallbackUsed(modelUsed, opts.modelResolution),
+      proxyErrorBody: siteErrorBody,
+      filterHeaders: filterResponseHeaders,
+      logger: this.logger,
+    });
   }
 
   private buildUpstreamHeaders(requestId: string, apiKey?: string): Record<string, string> {
@@ -225,138 +84,11 @@ export class OpenRouterClient {
     }
     return headers;
   }
-
-  private buildResultFromResponse(
-    statusCode: number,
-    upstreamHeaders: Record<string, string | string[] | undefined>,
-    bodyText: string,
-    parsed: unknown,
-    classification: Classification,
-    requestId: string,
-    attempt: number,
-    resolution: ModelResolution,
-  ): ProxyResult {
-    const parsedObj = (parsed && typeof parsed === 'object') ? (parsed as Record<string, unknown>) : null;
-    const upstreamId = typeof parsedObj?.id === 'string' ? parsedObj.id : null;
-    const modelUsed = typeof parsedObj?.model === 'string' ? parsedObj.model : undefined;
-    // Строгая нормализация вместо каста: негодное поле usage становится NULL, но не роняет
-    // bind в better-sqlite3 (иначе persistRecord потерял бы ВСЮ строку журнала).
-    const usage = normalizeUsage(parsedObj?.usage);
-
-    const result: ProxyResult = {
-      statusCode,
-      headers: filterResponseHeaders(upstreamHeaders, requestId, upstreamId),
-      bodyText,
-      classification: classification.kind,
-      fallbackUsed: this.computeFallbackUsed(modelUsed, resolution),
-      attemptCount: attempt,
-    };
-    if (usage) result.usage = usage;
-    if (modelUsed) result.modelUsed = modelUsed;
-    if (upstreamId) result.upstreamId = upstreamId;
-
-    if (classification.kind === 'body_level_error') {
-      result.errorCode = classification.code;
-      result.errorMsg = classification.message;
-    } else if (classification.kind === 'upstream_error') {
-      if (classification.code) result.errorCode = classification.code;
-      if (classification.message) result.errorMsg = classification.message;
-      const retryAfter = parseRetryAfterMs(upstreamHeaders['retry-after']);
-      if (retryAfter !== null) result.retryAfterSeconds = Math.round(retryAfter / 1000);
-    } else if (classification.kind === 'malformed_success') {
-      result.errorCode = classification.reason;
-    }
-
-    return result;
-  }
-
-  private buildResultFromError(err: unknown, requestId: string, attempt: number): ProxyResult {
-    const sanitized = sanitizeErrorForLog(err);
-    this.logger.warn({ err: sanitized, requestId, attempt }, 'upstream attempt failed');
-
-    if (err instanceof UpstreamResponseTooLargeError) {
-      return {
-        statusCode: 502,
-        headers: filterResponseHeaders({}, requestId, null),
-        bodyText: JSON.stringify({
-          error: { code: 'upstream_response_too_large', message: 'upstream response exceeded limit' },
-        }),
-        classification: 'upstream_response_too_large',
-        fallbackUsed: null,
-        attemptCount: attempt,
-        errorCode: 'upstream_response_too_large',
-        errorMsg: sanitized.message,
-      };
-    }
-
-    // AbortError = таймаут одной попытки
-    const isAbort =
-      err instanceof undiciErrors.RequestAbortedError ||
-      (err as { name?: string })?.name === 'AbortError';
-
-    return {
-      statusCode: 504,
-      headers: filterResponseHeaders({}, requestId, null),
-      bodyText: JSON.stringify({
-        error: { code: isAbort ? 'attempt_timeout' : 'network_error', message: sanitized.message },
-      }),
-      classification: 'network_error',
-      fallbackUsed: null,
-      attemptCount: attempt,
-      errorCode: isAbort ? 'attempt_timeout' : (sanitized.code ?? 'network_error'),
-      errorMsg: sanitized.message,
-    };
-  }
-
-  private computeFallbackUsed(modelUsed: string | undefined, resolution: ModelResolution): number | null {
-    if (!modelUsed) return null;
-    if (modelUsed === resolution.model) return 0;
-    if (resolution.fallbackModels.includes(modelUsed)) return 1;
-    return null;
-  }
-
-  private shouldRetry(classification: Classification, attempt: number, deadline: Deadline): boolean {
-    if (attempt >= this.config.UPSTREAM_MAX_ATTEMPTS) return false;
-    if (deadline.remaining() <= this.config.MIN_REMAINING_MS) return false;
-    if (classification.kind === 'success') return false;
-    if (classification.kind === 'malformed_success') return classification.retryable;
-    if (classification.kind === 'body_level_error') return classification.retryable;
-    if (classification.kind === 'upstream_error') return classification.retryable;
-    if (classification.kind === 'network_error') return true;
-    return false;
-  }
-
-  private waitMs(
-    classification: Classification,
-    headers: Record<string, string | string[] | undefined>,
-    attempt: number,
-  ): number {
-    if (
-      (classification.kind === 'upstream_error' && classification.httpStatus === 429) ||
-      (classification.kind === 'upstream_error' && classification.httpStatus === 503)
-    ) {
-      const fromHeader = parseRetryAfterMs(headers['retry-after']);
-      if (fromHeader !== null) return fromHeader;
-    }
-    return computeBackoffMs(attempt);
-  }
-
-  private makeDeadlineExceeded(requestId: string, attemptCount: number): ProxyResult {
-    return {
-      statusCode: 504,
-      headers: filterResponseHeaders({}, requestId, null),
-      bodyText: JSON.stringify({
-        error: { code: 'deadline_exceeded', message: 'request deadline exceeded' },
-      }),
-      classification: 'upstream_error',
-      fallbackUsed: null,
-      attemptCount,
-      errorCode: 'deadline_exceeded',
-      errorMsg: 'request deadline exceeded',
-    };
-  }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms).unref?.());
+function computeFallbackUsed(modelUsed: string | undefined, resolution: ModelResolution): number | null {
+  if (!modelUsed) return null;
+  if (modelUsed === resolution.model) return 0;
+  if (resolution.fallbackModels.includes(modelUsed)) return 1;
+  return null;
 }

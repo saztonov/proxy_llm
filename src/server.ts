@@ -1,6 +1,7 @@
 import { loadConfig, estimateMemoryBudget } from './config.js';
 import { logger } from './utils/logger.js';
 import { buildApp, type AppBundle } from './app.js';
+import { gracefulShutdown } from './shutdown.js';
 import { sanitizeErrorForLog } from './utils/sanitize-error.js';
 
 async function main(): Promise<void> {
@@ -33,35 +34,7 @@ function installShutdownHandlers(drainMs: number, bundle: AppBundle): void {
     shuttingDown = true;
     logger.info({ signal, drainMs }, 'graceful shutdown started');
 
-    bundle.stopWatchdog();
-    bundle.stopDigest();
-    bundle.stopFairnessReconciler();
-    bundle.stopPriceSync();
-
-    try {
-      await bundle.app.close();
-    } catch (err) {
-      logger.warn({ err: sanitizeErrorForLog(err) }, 'app.close threw');
-    }
-
-    // Дать активным запросам шанс завершиться.
-    const deadline = Date.now() + drainMs;
-    while (bundle.activeMetrics.size() > 0 && Date.now() < deadline) {
-      await sleep(200);
-    }
-
-    if (bundle.activeMetrics.size() > 0) {
-      logger.warn({ stillActive: bundle.activeMetrics.size() }, 'drain timeout, exiting anyway');
-    }
-
-    bundle.startupAlert.recordShutdown();
-
-    try {
-      bundle.db.close();
-    } catch (err) {
-      logger.warn({ err: sanitizeErrorForLog(err) }, 'db.close threw');
-    }
-
+    await gracefulShutdown(bundle, { drainMs, logger });
     process.exit(0);
   };
 
@@ -82,12 +55,6 @@ function installShutdownHandlers(drainMs: number, bundle: AppBundle): void {
   });
   process.on('unhandledRejection', (err) => {
     logger.error({ err: sanitizeErrorForLog(err) }, 'unhandledRejection');
-  });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms).unref?.();
   });
 }
 

@@ -25,6 +25,11 @@ const BODY_RETRYABLE_CODES = new Set([
   'rate_limit_exceeded',
 ]);
 
+/** Для error-события в начале стрима: тот же список, что и для body-level ошибок при HTTP 200. */
+export function isRetryableBodyCode(code: string): boolean {
+  return BODY_RETRYABLE_CODES.has(code);
+}
+
 const HTTP_RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const HTTP_TERMINAL_STATUSES = new Set([400, 401, 402, 403, 404, 405, 409, 422]);
 

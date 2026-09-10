@@ -116,10 +116,11 @@ export async function registerDashboard(
     { onRequest: app.basicAuth },
     async (_req, reply) => {
       const now = Date.now();
-      const aggDay = deps.repo.aggregateSince(now - 24 * 60 * 60_000);
-      const aggHour = deps.repo.aggregateSince(now - 60 * 60_000);
-      const p95Day = deps.repo.p95LatencySince(now - 24 * 60 * 60_000);
-      const recent = deps.repo.listRecent(100);
+      // Старый дашборд — про контур сайтов; агенты смотрятся в /admin.
+      const aggDay = deps.repo.aggregateSince(now - 24 * 60 * 60_000, undefined, 'site');
+      const aggHour = deps.repo.aggregateSince(now - 60 * 60_000, undefined, 'site');
+      const p95Day = deps.repo.p95LatencySince(now - 24 * 60 * 60_000, 500, 'site');
+      const recent = deps.repo.listRecent(100, 'site');
 
       const html = eta.renderString(tplText, {
         aggDay,
@@ -148,11 +149,11 @@ export async function registerDashboard(
       const sync = deps.billing.lastSuccessfulSync();
 
       reply.send({
-        day: deps.repo.aggregateSince(now - 24 * 60 * 60_000),
-        hour: deps.repo.aggregateSince(now - 60 * 60_000),
-        p95DayMs: deps.repo.p95LatencySince(now - 24 * 60 * 60_000),
+        day: deps.repo.aggregateSince(now - 24 * 60 * 60_000, undefined, 'site'),
+        hour: deps.repo.aggregateSince(now - 60 * 60_000, undefined, 'site'),
+        p95DayMs: deps.repo.p95LatencySince(now - 24 * 60 * 60_000, 500, 'site'),
         activeCount: deps.activeMetrics.size(),
-        perClientDay: deps.repo.perClientAggregate(now - 24 * 60 * 60_000),
+        perClientDay: deps.repo.perClientAggregate(now - 24 * 60 * 60_000, 'site'),
         // Additive-блок: существующие ключи не трогаем, на них могут быть завязаны скрипты.
         billing: {
           timezone: tz,

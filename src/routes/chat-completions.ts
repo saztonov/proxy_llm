@@ -3,27 +3,27 @@ import type { Config } from '../config.js';
 import type { Logger } from '../utils/logger.js';
 import { newRequestId, isValidIdempotencyKey, isValidRequestId } from '../utils/ids.js';
 import { ActiveRequests, ActiveDedupFullError } from '../dedup/active-requests.js';
-import {
-  OpenRouterClient,
-  type ProxyResult,
-  type AttemptObservation,
-} from '../upstream/openrouter-client.js';
+import type { OpenRouterClient } from '../upstream/openrouter-client.js';
+import type { ProxyResult } from '../upstream/types.js';
 import { createDeadline } from '../upstream/deadline.js';
-import { billingDay } from '../billing/billing-time.js';
 import { resolvePayer } from '../billing/payer.js';
-import { estimateCost } from '../billing/estimate-cost.js';
-import type { BillingRepo, BillingAttemptRecord } from '../storage/billing-repo.js';
+import type { BillingRepo } from '../storage/billing-repo.js';
 import { clientWantedStreaming } from '../upstream/sanitize-payload.js';
 import { resolveModel } from '../upstream/resolve-model.js';
-import { sanitizeForLog } from '../utils/sanitize.js';
 import { sanitizeErrorForLog } from '../utils/sanitize-error.js';
-import type { RequestsRepo, RequestRecord } from '../storage/requests-repo.js';
+import type { RequestsRepo } from '../storage/requests-repo.js';
 import type { AlertEngine } from '../alerts/rules.js';
-import type { ActiveSource, ActiveRequestSnapshot } from '../watchdog/ticker.js';
 import { makeBearerAuthHook } from '../auth/bearer.js';
 import type { ClientConfig } from '../clients/registry.js';
 import type { TokenResolver } from '../clients/site-registry.js';
 import type { FairnessManager } from '../concurrency/fairness.js';
+import { ActiveMetrics } from '../concurrency/active-metrics.js';
+import { makeBillingSink } from '../journal/billing-sink.js';
+import { recordRequest, type JournalEntry, type JournalOutcome } from '../journal/record-request.js';
+import { siteAttribution } from '../journal/attribution.js';
+
+/** Реэкспорт: исторически ActiveMetrics импортировали отсюда (app.ts, тесты). */
+export { ActiveMetrics };
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -50,60 +50,6 @@ export interface ChatRoutesDeps {
   billing: BillingRepo;
   alerts: AlertEngine;
   activeMetrics: ActiveMetrics;
-}
-
-/** Реестр живых запросов для watchdog'а и для сверки admission-счётчиков (см. concurrency/reconcile.ts). */
-export class ActiveMetrics implements ActiveSource {
-  private readonly active = new Map<
-    string,
-    { clientId: string; admitted: boolean; startedAt: number; deadlineAt: number; abort: AbortController }
-  >();
-
-  /**
-   * `admitted` — прошёл ли этот конкретный request fairness.tryAdmit (а не dedup-join,
-   * который делит промис с уже admitted-запросом и слот не занимает). Различие важно для
-   * countAdmittedByClient()/countAdmittedTotal() — join-запросы не должны туда попадать.
-   */
-  register(requestId: string, clientId: string, admitted: boolean, deadlineAt: number, abort: AbortController): void {
-    this.active.set(requestId, { clientId, admitted, startedAt: Date.now(), deadlineAt, abort });
-  }
-
-  unregister(requestId: string): void {
-    this.active.delete(requestId);
-  }
-
-  size(): number {
-    return this.active.size;
-  }
-
-  snapshot(): ActiveRequestSnapshot[] {
-    return [...this.active.entries()].map(([requestId, v]) => ({
-      requestId,
-      startedAt: v.startedAt,
-      deadlineAt: v.deadlineAt,
-    }));
-  }
-
-  abort(requestId: string): void {
-    this.active.get(requestId)?.abort.abort();
-  }
-
-  /** Живые admitted-запросы (реально занимают fairness-слот) по clientId — эталон для reconcile(). */
-  countAdmittedByClient(): Map<string, number> {
-    const counts = new Map<string, number>();
-    for (const v of this.active.values()) {
-      if (!v.admitted) continue;
-      counts.set(v.clientId, (counts.get(v.clientId) ?? 0) + 1);
-    }
-    return counts;
-  }
-
-  /** Суммарно admitted-запросов (эталон для глобального счётчика fairness). */
-  countAdmittedTotal(): number {
-    let n = 0;
-    for (const v of this.active.values()) if (v.admitted) n++;
-    return n;
-  }
 }
 
 /** Идемпотентно освобождает admission-слот (onResponse / onRequestAbort). */
@@ -268,6 +214,18 @@ async function handleChat(
   // id генерируется здесь, но в ledger попадает только через фабрику — то есть только у
   // запроса, который реально пошёл в OpenRouter. Присоединившийся получит чужой id обратно.
   const candidateExecutionId = newRequestId();
+  const onAttempt = makeBillingSink(
+    { billing: deps.billing, timezone: deps.config.BILLING_TIMEZONE },
+    {
+      requestId: ctx.requestId,
+      clientId: ctx.clientId,
+      payer: resolvePayer(ctx.client, deps.config.OPENROUTER_API_KEY),
+      modelRequested: modelResolution.model,
+      executionId: candidateExecutionId,
+      attribution: siteAttribution(ctx.client.tokenId),
+      pricing: 'openrouter',
+    },
+  );
   const factory = async (): Promise<ProxyResult> =>
     clientQueue.add(() =>
       deps.fairness.globalQueue.add(() =>
@@ -278,7 +236,7 @@ async function handleChat(
           modelResolution,
           clientId: ctx.clientId,
           signal: abort.signal,
-          onAttempt: makeAttemptSink(deps, ctx, modelResolution.model, candidateExecutionId),
+          onAttempt,
           ...(ctx.client.openrouterApiKey ? { apiKey: ctx.client.openrouterApiKey } : {}),
         }),
       ),
@@ -287,6 +245,19 @@ async function handleChat(
   let result: ProxyResult;
   let executionId = candidateExecutionId;
   let joined = false;
+  const entry = (): JournalEntry => ({
+    requestId: ctx.requestId,
+    idempotencyKey: ctx.idempotencyKey,
+    tsReceived: ctx.tsReceived,
+    clientId: ctx.clientId,
+    source: ctx.client.source,
+    clientIp,
+    attribution: siteAttribution(ctx.client.tokenId),
+    executionId,
+    joined,
+    modelRequested: modelResolution.model,
+    requestBytes,
+  });
   try {
     if (ctx.idempotencyKey) {
       const tracked = deps.active.registerOrJoinTracked(
@@ -310,17 +281,12 @@ async function handleChat(
       return;
     }
     deps.logger.error({ err: sanitizeErrorForLog(err), requestId: ctx.requestId }, 'handler error');
-    persistRecord(deps, ctx, {
-      classification: 'upstream_error',
+    recordRequest(deps, entry(), {
       statusCode: 500,
-      bodyText: '',
+      classification: 'upstream_error',
       attemptCount: 0,
       fallbackUsed: null,
-      headers: {},
-    } as unknown as ProxyResult, requestBytes, clientIp, {
-      executionId,
-      joined,
-      modelRequested: modelResolution.model,
+      responseBytes: 0,
     });
     reply.code(500).send({ error: { code: 'internal', message: 'internal proxy error' } });
     return;
@@ -328,11 +294,7 @@ async function handleChat(
     deps.activeMetrics.unregister(ctx.requestId);
   }
 
-  persistRecord(deps, ctx, result, requestBytes, clientIp, {
-    executionId,
-    joined,
-    modelRequested: modelResolution.model,
-  });
+  recordRequest(deps, entry(), outcomeOf(result));
 
   for (const [k, v] of Object.entries(result.headers)) {
     if (v !== undefined) reply.header(k, v);
@@ -341,143 +303,18 @@ async function handleChat(
   reply.send(result.bodyText);
 }
 
-interface BillingLink {
-  executionId: string;
-  joined: boolean;
-  modelRequested: string;
-}
-
-/**
- * Sink наблюдений за попытками: превращает AttemptObservation в строку ledger'а.
- *
- * Живёт в роуте, а не в OpenRouterClient, чтобы клиент оставался storage-agnostic.
- * Исключения гасит вызывающий (OpenRouterClient.emitAttempt) — учёт не должен ломать прокси.
- */
-function makeAttemptSink(
-  deps: ChatRoutesDeps,
-  ctx: NonNullable<FastifyRequest['proxyContext']>,
-  modelRequested: string,
-  executionId: string,
-): (obs: AttemptObservation) => void {
-  const payer = resolvePayer(ctx.client, deps.config.OPENROUTER_API_KEY);
-  return (obs) => {
-    const modelId = obs.modelUsed ?? modelRequested;
-    // Цена, наблюдавшаяся на момент попытки, — не текущая: иначе вчерашний запрос
-    // пересчитывался бы по сегодняшнему прайсу.
-    const priceVersion = deps.billing.priceVersionAt(modelId, obs.tsStarted);
-    const est = estimateCost(priceVersion, obs.usage, modelId);
-    const record: BillingAttemptRecord = {
-      execution_id: executionId,
-      attempt_no: obs.attemptNo,
-      request_id: ctx.requestId,
-      client_id: ctx.clientId,
-      payer_scope: payer.scope,
-      api_key_fp: payer.fingerprint,
-      ts_started: obs.tsStarted,
-      ts_completed: obs.tsCompleted,
-      billing_day: billingDay(obs.tsStarted, deps.config.BILLING_TIMEZONE),
-      http_status: obs.httpStatus,
-      classification: obs.classification,
-      model_requested: modelRequested,
-      model_used: obs.modelUsed ?? null,
-      upstream_id: obs.upstreamId ?? null,
-      prompt_tokens: obs.usage?.promptTokens ?? null,
-      completion_tokens: obs.usage?.completionTokens ?? null,
-      total_tokens: obs.usage?.totalTokens ?? null,
-      cached_tokens: obs.usage?.cachedTokens ?? null,
-      cache_write_tokens: obs.usage?.cacheWriteTokens ?? null,
-      reasoning_tokens: obs.usage?.reasoningTokens ?? null,
-      cost_usd: obs.usage?.costUsd ?? null,
-      upstream_inference_cost_usd: obs.usage?.upstreamInferenceCostUsd ?? null,
-      is_byok: obs.usage?.isByok === undefined ? null : obs.usage.isByok ? 1 : 0,
-      usage_source: obs.usageSource,
-      // Диагностика: в денежные итоги не входит, показывается отдельно с пометкой «≈».
-      cost_est_usd: est.usd,
-      est_quality: est.quality,
-      est_price_version: priceVersion?.id ?? null,
-      usage_json: obs.usage?.raw ?? null,
-      contour: 'site',
-      token_id: ctx.client.tokenId ?? null,
-    };
-    deps.billing.insertAttempt(record);
+function outcomeOf(result: ProxyResult): JournalOutcome {
+  return {
+    statusCode: result.statusCode,
+    classification: result.classification,
+    attemptCount: result.attemptCount,
+    fallbackUsed: result.fallbackUsed,
+    responseBytes: Buffer.byteLength(result.bodyText, 'utf8'),
+    usage: result.usage,
+    modelUsed: result.modelUsed,
+    upstreamId: result.upstreamId,
+    errorCode: result.errorCode,
+    errorMsg: result.errorMsg,
+    retryAfterSeconds: result.retryAfterSeconds,
   };
-}
-
-function persistRecord(
-  deps: ChatRoutesDeps,
-  ctx: NonNullable<FastifyRequest['proxyContext']>,
-  result: ProxyResult,
-  requestBytes: number,
-  clientIp: string,
-  billing: BillingLink,
-): void {
-  const tsCompleted = Date.now();
-  const record: RequestRecord = {
-    request_id: ctx.requestId,
-    idempotency_key: ctx.idempotencyKey,
-    upstream_id: result.upstreamId ?? null,
-    ts_received: ctx.tsReceived,
-    ts_completed: tsCompleted,
-    model_used: result.modelUsed ?? null,
-    fallback_used: result.fallbackUsed,
-    status: mapStatus(result.classification),
-    http_status: result.statusCode,
-    latency_ms: tsCompleted - ctx.tsReceived,
-    request_bytes: requestBytes,
-    response_bytes: Buffer.byteLength(result.bodyText, 'utf8'),
-    // Токены последней попытки — legacy-поля для существующих оперативных агрегатов.
-    // Денежный и токенный учёт идёт по billing_attempts, где есть все попытки.
-    prompt_tokens: result.usage?.promptTokens ?? null,
-    completion_tokens: result.usage?.completionTokens ?? null,
-    total_tokens: result.usage?.totalTokens ?? null,
-    attempt_count: result.attemptCount,
-    retry_after_seconds: result.retryAfterSeconds ?? null,
-    error_code: result.errorCode ?? null,
-    error_msg: result.errorMsg ? sanitizeForLog(result.errorMsg, 500) : null,
-    client_ip: clientIp,
-    source: ctx.client.source,
-    client_id: ctx.clientId,
-    billing_execution_id: billing.executionId,
-    dedup_join: billing.joined ? 1 : 0,
-    model_requested: billing.modelRequested,
-    contour: 'site',
-    token_id: ctx.client.tokenId ?? null,
-  };
-
-  try {
-    deps.repo.insert(record);
-  } catch (err) {
-    deps.logger.error({ err: sanitizeErrorForLog(err) }, 'failed to persist request record');
-  }
-
-  deps.alerts
-    .onEvent({
-      type: 'request_completed',
-      status: record.status,
-      httpStatus: record.http_status,
-      latencyMs: record.latency_ms,
-      errorCode: record.error_code,
-      clientId: record.client_id,
-    })
-    .catch((err: unknown) =>
-      deps.logger.warn({ err: sanitizeErrorForLog(err) }, 'alert onEvent failed'),
-    );
-}
-
-function mapStatus(classification: ProxyResult['classification']): RequestRecord['status'] {
-  switch (classification) {
-    case 'success':
-      return 'success';
-    case 'body_level_error':
-      return 'body_level_error';
-    case 'malformed_success':
-      return 'malformed_success';
-    case 'upstream_response_too_large':
-      return 'upstream_response_too_large';
-    case 'network_error':
-      return 'timeout';
-    case 'upstream_error':
-    default:
-      return 'upstream_error';
-  }
 }
