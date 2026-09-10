@@ -24,6 +24,14 @@ const patchBody = z.object({ ...fields, name: fields.name.optional(), baseUrl: f
 
 type Issue = { path: string; message: string };
 
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
 function validateInput(b: { baseUrl?: string | undefined; extraHeaders?: Record<string, string> | null | undefined }, allowInsecure: boolean): Issue[] {
   const issues: Issue[] = [];
   if (b.baseUrl !== undefined) {
@@ -94,6 +102,20 @@ export async function registerProviderRoutes(app: FastifyInstance, ctx: AdminCtx
     if (b.enabled === false && defaultId() === p.id) {
       return sendError(reply, 409, 'provider_is_default', 'this provider serves the global default model; change the default first');
     }
+    // Ключ провайдера уходит на его base URL. Смена хоста без повторного ввода секретов
+    // позволила бы увести сохранённый ключ на свой сервер, хотя прочитать его API не даёт.
+    const fromOrigin = originOf(row.base_url);
+    const toOrigin = b.baseUrl !== undefined ? originOf(normalizeProviderUrl(b.baseUrl)) : fromOrigin;
+    const originChanged = toOrigin !== fromOrigin;
+    if (originChanged) {
+      const missing: Issue[] = [];
+      if (row.api_key_enc !== null && b.apiKey === undefined) missing.push({ path: 'apiKey', message: 'Введите ключ заново: меняется хост провайдера' });
+      if (row.extra_headers_enc !== null && b.extraHeaders === undefined) missing.push({ path: 'extraHeaders', message: 'Введите заголовки заново: меняется хост провайдера' });
+      if (missing.length) {
+        return sendError(reply, 409, 'reenter_secrets',
+          'При смене хоста провайдера ключ API и дополнительные заголовки нужно ввести заново.', { issues: missing });
+      }
+    }
     const patch: ProviderPatch = {};
     if (b.name !== undefined) patch.name = b.name;
     if (b.baseUrl !== undefined) patch.base_url = normalizeProviderUrl(b.baseUrl);
@@ -108,8 +130,10 @@ export async function registerProviderRoutes(app: FastifyInstance, ctx: AdminCtx
         fields: Object.keys(b).filter((k) => k !== 'apiKey' && k !== 'extraHeaders'),
         apiKeyChanged: b.apiKey !== undefined, extraHeadersChanged: b.extraHeaders !== undefined,
         ...(b.enabled !== undefined ? { enabled: b.enabled } : {}),
+        ...(originChanged ? { originChanged: true, baseUrl: toOrigin } : {}),
       });
     });
+    if (originChanged) ctx.alerts.onProviderOriginChanged(row.name, fromOrigin, toOrigin, req.ip).catch(() => undefined);
     reply.send({ provider: providerView(ctx, repo.get(p.id)!, defaultId()) });
   });
 

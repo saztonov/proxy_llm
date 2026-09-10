@@ -24,6 +24,10 @@ export interface AgentDeps {
 
 export interface AgentRequestContext {
   requestId: string;
+  /** Ключ в ActiveMetrics — свой, не X-Request-Id клиента (он может повторяться). */
+  liveId: string;
+  /** Ожидание тела после допуска; снимается, когда тело прочитано или запрос закончился. */
+  bodyTimer?: NodeJS.Timeout;
   tsReceived: number;
   principal: AgentPrincipal;
   admitted: boolean;
@@ -33,6 +37,14 @@ export interface AgentRequestContext {
 declare module 'fastify' {
   interface FastifyRequest {
     agentContext?: AgentRequestContext;
+  }
+}
+
+export function clearBodyTimer(req: FastifyRequest): void {
+  const ctx = req.agentContext;
+  if (ctx?.bodyTimer) {
+    clearTimeout(ctx.bodyTimer);
+    delete ctx.bodyTimer;
   }
 }
 

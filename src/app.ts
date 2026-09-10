@@ -26,6 +26,11 @@ import { OpenAICompatibleClient } from './upstream/openai-compatible-client.js';
 import { agentPlugin } from './agent/plugin.js';
 import { adminPlugin } from './admin/plugin.js';
 import { combineActiveSources } from './watchdog/composite-source.js';
+import { ProxyAbort } from './concurrency/active-metrics.js';
+import { startRegistryWatcher } from './clients/registry-watcher.js';
+
+/** Как часто сервис проверяет, не правил ли CLI реестры в БД. */
+const REGISTRY_WATCH_INTERVAL_MS = 5_000;
 
 export interface AppBundle {
   app: FastifyInstance;
@@ -108,6 +113,13 @@ export async function buildApp(config: Config): Promise<AppBundle> {
   );
   agentRegistry.onReload((tenants) => agentFairness.syncClients(tenants));
   const agentActiveMetrics = new ActiveMetrics();
+  // Отзыв ключа или отключение владельца обрывает и уже идущие запросы этого ключа, а не только
+  // новые: иначе утёкший ключ стримил бы до дедлайна (10 минут).
+  const keyRevoked = new ProxyAbort('key_revoked', 'The API key was revoked or disabled by the administrator.');
+  agentRegistry.onReload(() => {
+    const n = agentActiveMetrics.abortWhere((r) => r.tokenId !== undefined && !agentRegistry.hasToken(r.tokenId), keyRevoked);
+    if (n > 0) logger.info({ aborted: n }, 'agent requests aborted: key revoked or owner disabled');
+  });
   const agentDispatcher = new UndiciAgent({
     connections: config.AGENT_UPSTREAM_POOL_CONNECTIONS,
     pipelining: 1,
@@ -142,6 +154,15 @@ export async function buildApp(config: Config): Promise<AppBundle> {
   const stopFairnessReconciler = startFairnessReconciler(fairness, activeMetrics, logger);
   const stopAgentReconciler = startFairnessReconciler(agentFairness, agentActiveMetrics, logger);
   const stopPriceSync = startPriceSyncScheduler({ config, billing, logger });
+  const stopRegistryWatcher = startRegistryWatcher({
+    settings: repos.settings,
+    reload: () => {
+      registry.reload();
+      agentRegistry.reload();
+    },
+    intervalMs: REGISTRY_WATCH_INTERVAL_MS,
+    logger,
+  });
 
   const app = Fastify({
     logger: false,
@@ -238,6 +259,7 @@ export async function buildApp(config: Config): Promise<AppBundle> {
       stopFairnessReconciler();
       stopAgentReconciler();
       stopPriceSync();
+      stopRegistryWatcher();
     },
     activeSources: [activeMetrics, agentActiveMetrics],
     agentRegistry,

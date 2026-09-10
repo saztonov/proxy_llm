@@ -1,11 +1,11 @@
 import type { FastifyInstance } from 'fastify';
-import { newRequestId, isValidRequestId } from '../utils/ids.js';
+import { newRequestId, isSafeRequestId } from '../utils/ids.js';
 import { ipAllowed } from '../utils/cidr.js';
 import { sanitizeErrorForLog } from '../utils/sanitize-error.js';
 import type { AgentPrincipal } from '../clients/agent-registry.js';
 import { sendOpenAIError } from './errors.js';
 import { WindowRateLimiter, ProviderLimiter, AuthFailureMonitor } from './limiters.js';
-import { releaseAgentAdmission, type AgentDeps } from './deps.js';
+import { releaseAgentAdmission, clearBodyTimer, type AgentDeps } from './deps.js';
 import { handleAgentChat } from './chat-handler.js';
 
 export interface AgentPluginOptions {
@@ -87,7 +87,15 @@ export async function agentPlugin(app: FastifyInstance, opts: AgentPluginOptions
     if (!principal) {
       // Один ответ для отсутствующего, неизвестного, отозванного и истёкшего токена.
       const count = authFailures.record(req.ip);
-      logger.warn({ contour: 'agent', ip: req.ip, path: req.url.split('?')[0], reason: token ? 'invalid' : 'missing' }, 'agent auth failed');
+      // Поток мусорных токенов не должен становиться потоком строк journald: не больше пачки
+      // строк за окно, число пропущенных — в первой строке следующего окна.
+      const log = authFailures.logDecision();
+      if (log.log) {
+        logger.warn({
+          contour: 'agent', ip: req.ip, path: req.url.split('?')[0], reason: token ? 'invalid' : 'missing',
+          ...(log.suppressed > 0 ? { suppressedBefore: log.suppressed } : {}),
+        }, 'agent auth failed');
+      }
       if (count >= config.AGENT_AUTH_FAIL_ALERT_THRESHOLD && authFailures.shouldNotify()) {
         deps.alerts.onAgentAuthFailures(count, AUTH_FAILURE_WINDOW_MS, authFailures.topIps()).catch(() => undefined);
       }
@@ -101,8 +109,8 @@ export async function agentPlugin(app: FastifyInstance, opts: AgentPluginOptions
     }
 
     const rawReqId = req.headers['x-request-id'];
-    const requestId = typeof rawReqId === 'string' && isValidRequestId(rawReqId) ? rawReqId : newRequestId();
-    req.agentContext = { requestId, tsReceived: Date.now(), principal, admitted: false, released: false };
+    const requestId = typeof rawReqId === 'string' && isSafeRequestId(rawReqId) ? rawReqId : newRequestId();
+    req.agentContext = { requestId, liveId: newRequestId(), tsReceived: Date.now(), principal, admitted: false, released: false };
 
     const rl = rateLimiter.hit(principal.slotKey);
     if (!rl.allowed) {
@@ -136,10 +144,37 @@ export async function agentPlugin(app: FastifyInstance, opts: AgentPluginOptions
       }
       return;
     }
-    req.agentContext.admitted = true;
+    const ctx = req.agentContext;
+    ctx.admitted = true;
+    // Слот занят, а тело ещё не прочитано: медленная или брошенная загрузка не должна держать
+    // его дольше AGENT_BODY_READ_TIMEOUT_MS. Обрыв соединения клиентом ловит onRequestAbort.
+    ctx.bodyTimer = setTimeout(() => {
+      delete ctx.bodyTimer;
+      logger.warn({ contour: 'agent', slotKey: principal.slotKey, requestId }, 'agent request body not received in time; connection closed');
+      releaseAgentAdmission(req, deps.fairness);
+      req.raw.destroy();
+    }, config.AGENT_BODY_READ_TIMEOUT_MS);
+    ctx.bodyTimer.unref?.();
   });
 
-  app.addHook('onResponse', async (req) => releaseAgentAdmission(req, deps.fairness));
+  app.addHook('preValidation', async (req) => clearBodyTimer(req));
+  app.addHook('onResponse', async (req) => {
+    clearBodyTimer(req);
+    releaseAgentAdmission(req, deps.fairness);
+  });
+  // Клиент оборвал соединение, в том числе посреди загрузки тела: обработчик тогда не
+  // запускается и его finally не сработает — слот и запрос к провайдеру освобождаем здесь.
+  app.addHook('onRequestAbort', async (req) => {
+    clearBodyTimer(req);
+    releaseAgentAdmission(req, deps.fairness);
+    const live = req.agentContext?.liveId;
+    if (live) deps.activeMetrics.abort(live);
+  });
+  // Ответы контура отдаются с того же origin, что и /admin: браузер не должен угадывать тип.
+  app.addHook('onSend', async (_req, reply, payload) => {
+    reply.header('x-content-type-options', 'nosniff');
+    return payload;
+  });
 
   app.get('/models', async (req, reply) => {
     reply.header('cache-control', 'no-store').send({ object: 'list', data: modelList(req.agentContext!.principal) });

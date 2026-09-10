@@ -23,8 +23,9 @@ import { validateProviderUrl, normalizeProviderUrl } from '../upstream/provider-
  * ротация ключа шифрования. Секреты — только через stdin или --generate, никогда в argv
  * (argv виден всем в `ps`).
  *
- * Работает прямо с БД. Работающий сервис видит изменения реестров после SIGHUP:
- * `systemctl kill -s HUP proxy_llm`. Сессии админов проверяются по БД на каждом запросе,
+ * Работает прямо с БД. Работающий сервис перечитывает реестры сам в течение ~5 с (отметка
+ * settings.registry_generation) или сразу по `systemctl kill -s HUP proxy_llm`.
+ * Сессии админов проверяются по БД на каждом запросе,
  * поэтому revoke-sessions и reset-password действуют сразу.
  */
 
@@ -230,7 +231,17 @@ function readStdinSecret(): string {
   return v;
 }
 
-const HUP_HINT = 'Apply to the running service: systemctl kill -s HUP proxy_llm';
+const APPLY_HINT = 'The running service picks this up within ~5 s (immediately: systemctl kill -s HUP proxy_llm).';
+
+/** Целое в диапазоне или CliError: NaN не должен молча превращаться в «бессрочный». */
+export function intOption(value: string | undefined, name: string, min: number, max: number): number | null {
+  if (value === undefined) return null;
+  const v = value.trim();
+  if (!/^\d+$/.test(v)) throw new CliError(`--${name} must be a whole number`);
+  const n = Number(v);
+  if (n < min || n > max) throw new CliError(`--${name} must be between ${min} and ${max}`);
+  return n;
+}
 
 export async function main(argv: string[], out: (s: string) => void = console.log, err: (s: string) => void = console.error): Promise<number> {
   const { values: o, positionals } = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true, strict: true });
@@ -241,6 +252,11 @@ export async function main(argv: string[], out: (s: string) => void = console.lo
   }
   const handle = openDb(process.env.DB_PATH ?? '/var/lib/proxy_llm/prod.db');
   const repos = createRepos(handle.db);
+  // Отметка для registry-watcher работающего сервиса: он перечитает реестры за несколько секунд.
+  const applied = (): void => {
+    repos.settings.bumpRegistryGeneration(Date.now());
+    err(APPLY_HINT);
+  };
   const secrets = (): SecretBox => {
     const k = process.env.SECRETS_ENCRYPTION_KEY;
     if (!k) throw new CliError('SECRETS_ENCRYPTION_KEY is not set');
@@ -274,11 +290,11 @@ export async function main(argv: string[], out: (s: string) => void = console.lo
           baseUrl: need(o['base-url'], 'base-url'),
           apiKey: o['key-stdin'] ? readStdinSecret() : null,
           ...(o['usage-mode'] ? { usageMode: o['usage-mode'] } : {}),
-          maxConcurrency: o['max-concurrency'] ? Number(o['max-concurrency']) : null,
+          maxConcurrency: intOption(o['max-concurrency'], 'max-concurrency', 1, 200),
           allowInsecure: o['allow-insecure'] === true,
         });
         out(`provider id ${id}`);
-        err(HUP_HINT);
+        applied();
         return 0;
       }
       case 'provider list':
@@ -288,14 +304,16 @@ export async function main(argv: string[], out: (s: string) => void = console.lo
         return 0;
       case 'department add':
         out(`department id ${addDepartment(repos, { slug: need(o.slug, 'slug'), name: need(o.name, 'name') })}`);
+        applied();
         return 0;
       case 'employee add':
         out(`employee id ${addEmployee(repos, {
           login: need(o.login, 'login'), name: need(o.name, 'name'), departmentSlug: need(o.department, 'department'), email: o.email ?? null,
         })}`);
+        applied();
         return 0;
       case 'agent-token issue': {
-        const days = o['expires-days'] ? Number(o['expires-days']) : null;
+        const days = intOption(o['expires-days'], 'expires-days', 1, 3650);
         const t = issueAgentToken(repos, {
           ...(o.employee ? { employeeLogin: o.employee } : {}),
           ...(o.department ? { departmentSlug: o.department } : {}),
@@ -307,7 +325,7 @@ export async function main(argv: string[], out: (s: string) => void = console.lo
         });
         err(`Token id ${t.id} (${t.prefix}…). Shown once — hand it over via a secure channel:`);
         out(t.token);
-        err(HUP_HINT);
+        applied();
         return 0;
       }
       case 'agent-token list':
@@ -317,17 +335,17 @@ export async function main(argv: string[], out: (s: string) => void = console.lo
         }
         return 0;
       case 'agent-token revoke':
-        out(repos.agentTokens.revoke(Number(need(o.id, 'id')), Date.now()) ? 'revoked' : 'not found or already revoked');
-        err(HUP_HINT);
+        out(repos.agentTokens.revoke(intOption(need(o.id, 'id'), 'id', 1, Number.MAX_SAFE_INTEGER)!, Date.now()) ? 'revoked' : 'not found or already revoked');
+        applied();
         return 0;
       case 'settings set-default':
         setAgentDefault(repos, { providerName: need(o.provider, 'provider'), model: need(o.model, 'model') });
         out('ok');
-        err(HUP_HINT);
+        applied();
         return 0;
       case 'import-clients':
         out(JSON.stringify(importClientsFile(handle.db, repos, secrets(), need(o.file, 'file'))));
-        err(HUP_HINT);
+        applied();
         return 0;
       case 'rekey': {
         const n = rekey(handle.db, secrets(), new SecretBox(readStdinSecret()));

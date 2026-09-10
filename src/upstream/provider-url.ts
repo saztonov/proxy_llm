@@ -9,6 +9,25 @@ PRIVATE.addSubnet('192.168.0.0', 16, 'ipv4');
 PRIVATE.addAddress('::1', 'ipv6');
 PRIVATE.addSubnet('fc00::', 7, 'ipv6');
 
+/**
+ * Недопустимы никогда: link-local (в т.ч. метаданные облака 169.254.169.254) и «неуказанный»
+ * адрес, включая их IPv4-mapped формы.
+ */
+const NEVER = new BlockList();
+NEVER.addSubnet('169.254.0.0', 16, 'ipv4');
+NEVER.addSubnet('0.0.0.0', 8, 'ipv4');
+NEVER.addSubnet('fe80::', 10, 'ipv6');
+NEVER.addAddress('::', 'ipv6');
+NEVER.addSubnet('::ffff:a9fe:0', 112, 'ipv6');
+NEVER.addSubnet('::ffff:0:0', 104, 'ipv6');
+
+function isForbiddenHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '');
+  const family = isIP(host);
+  if (family === 0) return false;
+  return NEVER.check(host, family === 4 ? 'ipv4' : 'ipv6');
+}
+
 function isPrivateHost(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, '');
   if (host === 'localhost') return true;
@@ -33,6 +52,7 @@ export function validateProviderUrl(raw: string, allowInsecure: boolean): string
   }
   if (u.username || u.password) return 'base URL must not contain credentials';
   if (u.search || u.hash) return 'base URL must not contain a query or fragment';
+  if (isForbiddenHost(u.hostname)) return 'base URL must not point to a link-local or unspecified address';
   if (u.protocol === 'https:') return null;
   if (u.protocol === 'http:' && allowInsecure && isPrivateHost(u.hostname)) return null;
   return 'base URL must use https:// (http:// only for loopback or private hosts with ADMIN_ALLOW_INSECURE_PROVIDERS=true)';

@@ -12,6 +12,7 @@ const DETAIL_KEYS: ReadonlySet<string> = new Set([
   'label', 'prefix', 'tokenId', 'clientId', 'fields', 'enabled', 'model', 'providerId', 'principalType',
   'departmentId', 'employeeId', 'expiresAt', 'name', 'slug', 'login', 'baseUrl', 'usageMode',
   'apiKeyChanged', 'extraHeadersChanged', 'ok', 'httpStatus', 'reason', 'failures', 'allowedCidrs',
+  'originChanged', 'knownLogin',
 ]);
 
 type Scalar = string | number | boolean | null;

@@ -58,13 +58,13 @@ node -v && npm -v                                      # обязана быть
    cd /opt/proxy_llm
    sudo -u proxy_llm bash -c 'set -a; . /etc/proxy_llm/.env; set +a; /opt/node-v22/bin/node dist/cli/admin.js create --login admin --generate'
    ```
-8. nginx: добавить `location /admin` (allowlist IP админа) и `location /agent/` из `deploy/nginx/proxy_llm.conf`, затем `nginx -t && systemctl reload nginx`. Проверить `worker_connections` (десятки стримов = вдвое больше соединений nginx).
+8. nginx: добавить `location /admin` (allowlist IP админа) и `location /agent/` из `deploy/nginx/proxy_llm.conf`, а также `map` и `limit_req_zone` зоны `proxy_llm_agent_noauth` (уровень `http`, вне `server`), затем `nginx -t && systemctl reload nginx`. Проверить `worker_connections` (десятки стримов = вдвое больше соединений nginx).
 9. Войти в `/admin`: «Сайты» — клиенты с прежней политикой; «Провайдеры» — завести OpenRouter; «Настройки» — модель по умолчанию; «Справочник» и «Агентские ключи» — первый ключ; проверить его по `docs/agents.md`.
 
 После перехода:
 - `clients.json` больше не читается: при заданном `CLIENTS_CONFIG_PATH` в логе предупреждение. Правки — в админке; повторный импорт — `admin.js import-clients --file <путь>`.
 - `PROXY_INBOUND_TOKEN` стал обычным токеном `passdesk`. Ротация — выпустить новый токен passdesk в админке и отозвать старый; переменную можно убрать из `.env`.
-- После ручных правок БД или CLI: `systemctl kill -s HUP proxy_llm` перечитывает реестры без рестарта.
+- После правок через CLI сервис сам перечитывает реестры в течение ~5 секунд. После ручных правок БД (sqlite3) — `systemctl kill -s HUP proxy_llm`.
 - Откат кода (§2) возможен: старая версия игнорирует новые таблицы, но изменения токенов и политик, сделанные в админке, не увидит — она снова читает `clients.json`.
 
 ## 1. Обновление кода

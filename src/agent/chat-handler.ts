@@ -9,7 +9,9 @@ import { makeBillingSink } from '../journal/billing-sink.js';
 import { recordRequest, type JournalEntry, type JournalOutcome } from '../journal/record-request.js';
 import type { Attribution } from '../journal/attribution.js';
 import { sanitizeErrorForLog } from '../utils/sanitize-error.js';
-import { sanitizeForLog } from '../utils/sanitize.js';
+import { ProxyAbort } from '../concurrency/active-metrics.js';
+import { providerSecrets, redactSecrets } from '../upstream/provider-headers.js';
+import type { AgentProvider } from '../clients/agent-registry.js';
 import { openaiErrorBody, sendOpenAIError } from './errors.js';
 import { ClientClosedError, ReplyStreamSink } from './reply-stream-sink.js';
 import type { ProviderLimiter } from './limiters.js';
@@ -40,10 +42,14 @@ export async function handleAgentChat(req: FastifyRequest, reply: FastifyReply, 
 
   const cfg = deps.config;
   const provider = target.provider;
-  const { payload, stream, modelAsked } = buildAgentPayload(incoming, { model: target.model, usageMode: provider.usageMode });
+  const { payload, stream, modelAsked } = buildAgentPayload(incoming, {
+    model: target.model, usageMode: provider.usageMode, maxOutputTokens: cfg.AGENT_MAX_OUTPUT_TOKENS,
+  });
   const deadline = createDeadline(ctx.tsReceived, cfg.AGENT_REQUEST_DEADLINE_MS, cfg.AGENT_MIN_REMAINING_MS);
   const abort = new AbortController();
-  deps.activeMetrics.register(ctx.requestId, principal.slotKey, ctx.admitted, deadline.deadlineAt, abort);
+  deps.activeMetrics.register(ctx.liveId, principal.slotKey, ctx.admitted, deadline.deadlineAt, abort, {
+    requestId: ctx.requestId, tokenId: principal.tokenId,
+  });
   const sink = new ReplyStreamSink(reply);
   sink.onClose(() => abort.abort(new ClientClosedError()));
 
@@ -100,7 +106,7 @@ export async function handleAgentChat(req: FastifyRequest, reply: FastifyReply, 
     if (!stream) {
       const result = await queued(() => deps.client.executeNonStreaming(call));
       journal(outcomeOfResult(result, sink.clientClosed()));
-      sendResult(reply, result, provider.apiKey, provider.name);
+      sendResult(reply, result, provider);
       return;
     }
     const exec = await queued(() => deps.client.executeStreaming({ ...call, sink }));
@@ -109,8 +115,17 @@ export async function handleAgentChat(req: FastifyRequest, reply: FastifyReply, 
       return;
     }
     journal(outcomeOfResult(exec.result, sink.clientClosed()));
-    sendResult(reply, exec.result, provider.apiKey, provider.name);
+    sendResult(reply, exec.result, provider);
   } catch (err) {
+    if (err instanceof ProxyAbort) {
+      // Ключ отозван, пока запрос ждал в очереди: к провайдеру не ходили, платить не за что.
+      journal({
+        statusCode: 401, classification: 'client_aborted', attemptCount: 0, fallbackUsed: null, responseBytes: 0,
+        errorCode: err.code, errorMsg: err.message,
+      });
+      if (!sink.committed && !reply.sent) sendOpenAIError(reply, 401, 'invalid_api_key', 'Incorrect API key provided.');
+      return;
+    }
     if (err instanceof ClientClosedError || sink.clientClosed()) {
       journal({
         statusCode: 499, classification: 'client_aborted', attemptCount: 0, fallbackUsed: null, responseBytes: 0,
@@ -126,7 +141,7 @@ export async function handleAgentChat(req: FastifyRequest, reply: FastifyReply, 
     if (!sink.committed && !reply.sent) sendOpenAIError(reply, 500, 'internal_error', 'Internal proxy error.');
     else sink.end();
   } finally {
-    deps.activeMetrics.unregister(ctx.requestId);
+    deps.activeMetrics.unregister(ctx.liveId);
     releaseAgentAdmission(req, deps.fairness);
   }
 }
@@ -165,10 +180,11 @@ function outcomeOfStream(o: StreamOutcome): JournalOutcome {
 /**
  * Ответ клиенту. Отказ провайдера в авторизации или оплате — проблема аккаунта прокси, а не
  * ключа сотрудника: отдаём 502 с понятным текстом (оригинал — в журнале и в алерте). Тело
- * ошибки не в формате OpenAI (HTML шлюза и т.п.) оборачиваем; ключ провайдера вырезаем на
- * случай, если провайдер эхом вернул его в тексте ошибки.
+ * ошибки не в формате OpenAI (HTML шлюза и т.п.) заменяем текстом со статусом; ключ и
+ * значения доп. заголовков провайдера вырезаем, если провайдер вернул их эхом.
  */
-function sendResult(reply: FastifyReply, result: ProxyResult, providerKey: string | null, providerName: string): void {
+function sendResult(reply: FastifyReply, result: ProxyResult, provider: AgentProvider): void {
+  const providerName = provider.name;
   if (reply.sent || reply.raw.destroyed) return;
   let status = result.statusCode;
   let body = result.bodyText;
@@ -181,15 +197,20 @@ function sendResult(reply: FastifyReply, result: ProxyResult, providerKey: strin
     status = 502;
     body = openaiErrorBody(code, message);
     headers['content-type'] = 'application/json; charset=utf-8';
-  } else if (status >= 400) {
-    const parsed = safeParseJson(body) as { error?: unknown } | null;
-    if (!parsed || typeof parsed !== 'object' || !parsed.error) {
-      body = openaiErrorBody('upstream_error', `The provider returned HTTP ${status}: ${sanitizeForLog(body, 300)}`);
-      headers['content-type'] = 'application/json; charset=utf-8';
+  } else {
+    const parsed = safeParseJson(body);
+    const json = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as { error?: unknown }) : null;
+    if (!json || (status >= 400 && !json.error)) {
+      // Не JSON (HTML шлюза, текст): наружу только статус — в таких телах бывают внутренние
+      // адреса и детали инфраструктуры провайдера.
+      body = openaiErrorBody('upstream_error', `The provider returned an unexpected response (HTTP ${status}).`);
+      if (status < 400) status = 502;
     }
   }
-  if (providerKey && body.includes(providerKey)) body = body.split(providerKey).join('[REDACTED]');
+  body = redactSecrets(body, providerSecrets(provider));
   for (const [k, v] of Object.entries(headers)) if (v !== undefined) reply.header(k, v);
+  // Тело всегда JSON: Content-Type провайдера не пробрасываем (тот же origin, что и /admin).
+  reply.header('content-type', 'application/json; charset=utf-8');
   reply.header('cache-control', 'no-store');
   reply.code(status).send(body);
 }

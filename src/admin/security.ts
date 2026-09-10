@@ -32,11 +32,13 @@ export async function adminSecurityHeaders(req: FastifyRequest, reply: FastifyRe
 }
 
 /**
- * Защита от CSRF в глубину, независимо от SameSite и CSRF-токена: мутирующий запрос к API
- * админки принимается только same-origin (Origin/Sec-Fetch-Site), включая login и refresh.
+ * Защита от CSRF в глубину, независимо от SameSite и CSRF-токена: мутирующий запрос к
+ * админке принимается только same-origin (Origin/Sec-Fetch-Site), включая login и refresh.
+ * Проверяется любой не-GET под /admin, а не только путь /admin/api/: роутер декодирует
+ * %-кодирование, и /admin/%61pi/... иначе дошёл бы до API мимо проверки.
  */
 export async function adminOriginGuard(req: FastifyRequest, reply: FastifyReply): Promise<void> {
-  if (SAFE_METHODS.has(req.method) || !req.url.startsWith('/admin/api/')) return;
+  if (SAFE_METHODS.has(req.method)) return;
   if (!isSameOrigin({ method: req.method, headers: req.headers, host: req.host })) {
     reply.code(403).send({ error: { code: 'bad_origin', message: 'cross-origin request rejected' } });
   }

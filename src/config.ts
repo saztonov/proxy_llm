@@ -144,6 +144,12 @@ const baseSchema = z.object({
   AGENT_UPSTREAM_RESPONSE_BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(8 * MiB),
   AGENT_STREAM_RESPONSE_LIMIT_BYTES: z.coerce.number().int().positive().default(16 * MiB),
   AGENT_BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(1 * MiB),
+  // Сколько ждать тело запроса после допуска в очередь: медленная или брошенная загрузка
+  // не должна держать слот владельца.
+  AGENT_BODY_READ_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  // Потолок max_tokens / max_completion_tokens от агента (0 — без потолка): утёкший токен
+  // не закажет генерацию на сотни тысяч токенов за один вызов.
+  AGENT_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(0).default(32_768),
   AGENT_ALERT_LONG_REQUEST_MS: z.coerce.number().int().positive().default(540_000),
   AGENT_CORS_ALLOWED_ORIGINS: csvList,
 

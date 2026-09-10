@@ -89,6 +89,33 @@ export class AuthFailureMonitor {
     return this.events.length;
   }
 
+  static readonly LOG_BURST = 20;
+  static readonly LOG_WINDOW_MS = 10_000;
+  private logWindowStart = Number.NEGATIVE_INFINITY;
+  private logged = 0;
+  private suppressed = 0;
+
+  /**
+   * Писать ли в лог строку об этом отказе: не больше LOG_BURST строк за LOG_WINDOW_MS.
+   * suppressed — сколько строк пропущено в прошлом окне (сообщается в первой строке нового).
+   */
+  logDecision(): { log: boolean; suppressed: number } {
+    const now = this.now();
+    if (now - this.logWindowStart >= AuthFailureMonitor.LOG_WINDOW_MS) {
+      const suppressed = this.suppressed;
+      this.logWindowStart = now;
+      this.logged = 1;
+      this.suppressed = 0;
+      return { log: true, suppressed };
+    }
+    if (this.logged < AuthFailureMonitor.LOG_BURST) {
+      this.logged += 1;
+      return { log: true, suppressed: 0 };
+    }
+    this.suppressed += 1;
+    return { log: false, suppressed: 0 };
+  }
+
   /** true — пора отправить алерт (и отметка «отправлено» уже поставлена). */
   shouldNotify(): boolean {
     const now = this.now();

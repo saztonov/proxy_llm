@@ -21,6 +21,10 @@ const SECRET_REDACT_PATHS = [
   '*.plaintext',
   '*.refresh',
   '*.extraHeaders',
+  // fast-redact раскрывает '*' только на один уровень — секреты глубже перечисляем явно.
+  '*.*.apiKey',
+  '*.*.api_key',
+  '*.*.extraHeaders',
   'req.headers.cookie',
   '*.headers.cookie',
   '*["x-csrf-token"]',

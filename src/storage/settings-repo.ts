@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 export const SETTING = {
@@ -7,6 +8,8 @@ export const SETTING = {
   agentDefaultMaxPending: 'agent_default_max_pending',
   /** JSON-маркер завершённого импорта clients.json — после него файл не читается. */
   siteBootstrap: 'site_bootstrap',
+  /** Меняется CLI после правки реестров — сервис по нему перечитывает их (registry-watcher). */
+  registryGeneration: 'registry_generation',
 } as const;
 
 export interface AgentDefaults {
@@ -61,6 +64,11 @@ export class SettingsRepo {
       maxConcurrency: intOrNull(this.get(SETTING.agentDefaultMaxConcurrency)),
       maxPending: intOrNull(this.get(SETTING.agentDefaultMaxPending)),
     };
+  }
+
+  /** Отметка «реестры в БД изменены извне процесса» (CLI): новое случайное значение. */
+  bumpRegistryGeneration(now: number): void {
+    this.set(SETTING.registryGeneration, `${now}-${randomBytes(4).toString('hex')}`, now);
   }
 
   setAgentDefaults(d: AgentDefaults, now: number): void {

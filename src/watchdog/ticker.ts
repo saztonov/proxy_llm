@@ -11,7 +11,10 @@ export interface TickerConfig {
 }
 
 export interface ActiveRequestSnapshot {
+  /** Ключ для abort(): внутренний id прокси. */
   requestId: string;
+  /** Что показывать в логах и алертах (request-id из журнала); по умолчанию requestId. */
+  label?: string;
   startedAt: number;
   deadlineAt: number;
 }
@@ -36,9 +39,10 @@ export function startWatchdogTicker(
       const elapsed = now - req.startedAt;
       if (now > req.deadlineAt + 30_000 && !stuckAlerted.has(req.requestId)) {
         stuckAlerted.add(req.requestId);
-        logger.warn({ requestId: req.requestId, elapsed }, 'stuck request, forcing abort');
+        const shown = req.label ?? req.requestId;
+        logger.warn({ requestId: shown, elapsed }, 'stuck request, forcing abort');
         source.abort(req.requestId);
-        await alerts.onStuckRequest(req.requestId, elapsed);
+        await alerts.onStuckRequest(shown, elapsed);
       }
     }
 

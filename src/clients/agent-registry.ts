@@ -76,6 +76,8 @@ export interface AgentRegistryDeps {
 export interface AgentSnapshot {
   readonly byHash: ReadonlyMap<string, AgentPrincipal>;
   readonly tenants: readonly FairnessTenant[];
+  /** Id действующих токенов — чтобы оборвать запросы отозванных (см. app.ts). */
+  readonly tokenIds: ReadonlySet<number>;
 }
 
 export function providerKind(baseUrl: string): ProviderKind {
@@ -150,12 +152,14 @@ export class AgentRegistry implements TenantSource {
 
     const byHash = new Map<string, AgentPrincipal>();
     const tenants = new Map<string, FairnessTenant>();
+    const tokenIds = new Set<number>();
     for (const row of this.deps.agentTokens.listResolvable()) {
       const p = this.principalOf(row, providers, globalTarget, defaults);
       byHash.set(row.token_sha256, p);
+      tokenIds.add(row.id);
       tenants.set(p.slotKey, { clientId: p.slotKey, maxConcurrency: p.maxConcurrency, maxPending: p.maxPending });
     }
-    return { byHash, tenants: [...tenants.values()] };
+    return { byHash, tenants: [...tenants.values()], tokenIds };
   }
 
   private principalOf(
@@ -239,6 +243,11 @@ export class AgentRegistry implements TenantSource {
 
   clients(): readonly FairnessTenant[] {
     return this.snap.tenants;
+  }
+
+  /** Токен действует: не отозван, владелец не выключен (срок здесь не проверяется). */
+  hasToken(tokenId: number): boolean {
+    return this.snap.tokenIds.has(tokenId);
   }
 
   private touch(id: number, now: number): void {

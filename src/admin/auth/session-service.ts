@@ -43,7 +43,12 @@ export type RefreshOutcome =
   | { kind: 'reuse'; admin: AdminPublic | null }
   | { kind: 'invalid' };
 
-export type ChangePasswordOutcome = { kind: 'ok' } | { kind: 'invalid' } | { kind: 'weak'; message: string } | { kind: 'busy' };
+export type ChangePasswordOutcome =
+  | { kind: 'ok' }
+  | { kind: 'invalid' }
+  | { kind: 'weak'; message: string }
+  | { kind: 'busy' }
+  | { kind: 'locked'; retryAfterSec: number };
 
 export interface SessionServiceDeps {
   config: Config;
@@ -199,11 +204,17 @@ export class SessionService {
   async changePassword(adminId: number, current: string, next: string): Promise<ChangePasswordOutcome> {
     const user = this.deps.users.get(adminId);
     if (!user || user.enabled !== 1) return { kind: 'invalid' };
+    // Тот же счётчик неудач, что у входа: украденная сессия не даёт перебирать текущий пароль.
+    const gate = this.throttle.check(user.login);
+    if (!gate.allowed) return { kind: 'locked', retryAfterSec: gate.retryAfterSec };
     const weak = validateNewPassword(next);
     if (weak) return { kind: 'weak', message: weak };
     const ok = await this.scryptGuard(() => verifyPassword(current, user.password_hash));
     if (ok === 'busy') return { kind: 'busy' };
-    if (!ok) return { kind: 'invalid' };
+    if (!ok) {
+      this.throttle.fail(user.login);
+      return { kind: 'invalid' };
+    }
     const now = this.now();
     this.deps.users.setPassword(user.id, await hashPassword(next), now);
     this.deps.sessions.revokeAllForAdmin(user.id, now, 'password_changed');

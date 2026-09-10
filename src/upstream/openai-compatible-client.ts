@@ -17,6 +17,7 @@ import type { AgentProvider, ProviderKind } from '../clients/agent-registry.js';
 import { openaiErrorBody, sseErrorEvent } from '../agent/errors.js';
 import { ClientClosedError, type StreamSink } from '../agent/reply-stream-sink.js';
 import { sanitizeErrorForLog } from '../utils/sanitize-error.js';
+import { ProxyAbort } from '../concurrency/active-metrics.js';
 
 export interface AgentStreamPolicy extends AttemptPolicy {
   headersTimeoutMs: number;
@@ -78,6 +79,20 @@ class StreamTimeout extends Error {
  */
 const PRE_COMMIT_LIMIT_BYTES = 1024 * 1024;
 
+/**
+ * Что видит сотрудник вместо текста сетевой ошибки: адреса, порты, имена хостов и CN
+ * сертификата провайдера остаются только в журнале.
+ */
+const PUBLIC_ERROR_MESSAGES: Record<string, string> = {
+  network_error: 'the connection to the provider failed',
+  attempt_timeout: 'the provider did not respond in time',
+  aborted: 'the request was cancelled by the proxy',
+};
+
+function agentProxyErrorBody(code: string, message: string): string {
+  return openaiErrorBody(code, PUBLIC_ERROR_MESSAGES[code] ?? message);
+}
+
 const TIMEOUT_MESSAGES: Record<string, string> = {
   first_event_timeout: 'the provider sent no data in time',
   deadline_exceeded: 'request deadline exceeded',
@@ -105,6 +120,7 @@ function streamHeaders(requestId: string, upstreamId: string | undefined, kind: 
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-transform',
     'x-accel-buffering': 'no',
+    'x-content-type-options': 'nosniff',
     'x-proxy-request-id': requestId,
   };
   if (upstreamId) {
@@ -168,14 +184,19 @@ export class OpenAICompatibleClient {
 
   /** Заголовки собираются с нуля: ничего из запроса агента к провайдеру не уходит. */
   headers(p: AgentProvider, requestId: string, stream: boolean): Record<string, string> {
-    const h: Record<string, string> = { ...p.extraHeaders, 'Content-Type': 'application/json', 'X-Request-Id': requestId };
-    if (p.apiKey) h['Authorization'] = `Bearer ${p.apiKey}`;
-    if (stream) h['Accept'] = 'text/event-stream';
+    // Имена в нижнем регистре: заголовок админа с тем же именем в другом регистре не должен
+    // уйти вторым экземпляром рядом с заголовком прокси.
+    const h: Record<string, string> = {};
+    for (const [k, v] of Object.entries(p.extraHeaders)) h[k.toLowerCase()] = v;
+    h['content-type'] = 'application/json';
+    h['x-request-id'] = requestId;
+    if (p.apiKey) h['authorization'] = `Bearer ${p.apiKey}`;
+    if (stream) h['accept'] = 'text/event-stream';
     if (p.kind === 'openrouter') {
-      if (this.referer) h['HTTP-Referer'] = this.referer;
+      if (this.referer) h['http-referer'] = this.referer;
       if (this.title) {
-        h['X-OpenRouter-Title'] = this.title;
-        h['X-Title'] = this.title;
+        h['x-openrouter-title'] = this.title;
+        h['x-title'] = this.title;
       }
     }
     return h;
@@ -193,7 +214,7 @@ export class OpenAICompatibleClient {
       ...(this.dispatcher ? { dispatcher: this.dispatcher } : {}),
       ...(call.onAttempt ? { onAttempt: call.onAttempt } : {}),
       fallbackUsed: () => null,
-      proxyErrorBody: openaiErrorBody,
+      proxyErrorBody: agentProxyErrorBody,
       filterHeaders: (u, rid, uid) => agentResponseHeaders(u, rid, uid, call.provider.kind),
       logger: this.logger,
     };
@@ -388,6 +409,8 @@ export class OpenAICompatibleClient {
     let errorMsg: string | undefined;
     try {
       await sink.write(Buffer.concat(pending), signal);
+      // Предкоммитные чанки больше не нужны — не держим их в памяти весь стрим.
+      pending.length = 0;
       for (;;) {
         const next = await iter.next();
         if (next.done) break;
@@ -418,6 +441,7 @@ export class OpenAICompatibleClient {
         const own = signal.reason instanceof StreamTimeout ? signal.reason.code : null;
         let code: string;
         let message: string;
+        let publicMessage: string | undefined;
         if (err instanceof UpstreamResponseTooLargeError) {
           classification = 'upstream_response_too_large';
           code = 'upstream_response_too_large';
@@ -431,17 +455,19 @@ export class OpenAICompatibleClient {
             code = 'stream_idle_timeout';
             message = `the provider sent no data for ${Math.round(this.policy.idleTimeoutMs / 1000)} s`;
           } else if (call.signal.aborted) {
-            code = 'aborted';
-            message = 'the request was aborted by the proxy (restart or watchdog)';
+            const reason: unknown = call.signal.reason;
+            code = reason instanceof ProxyAbort ? reason.code : 'aborted';
+            message = reason instanceof ProxyAbort ? reason.publicMessage : 'the request was aborted by the proxy (restart or watchdog)';
           } else {
             code = 'network_error';
             message = sanitizeErrorForLog(err).message;
+            publicMessage = PUBLIC_ERROR_MESSAGES.network_error;
           }
         }
         errorCode = code;
         errorMsg = message;
         this.logger.warn({ requestId: call.requestId, code, err: sanitizeErrorForLog(err) }, 'agent stream interrupted');
-        await this.tryWrite(sink, sseErrorEvent(code, message));
+        await this.tryWrite(sink, sseErrorEvent(code, publicMessage ?? message));
       }
     } finally {
       sink.end();

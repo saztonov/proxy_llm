@@ -29,6 +29,8 @@ declare module 'fastify' {
   interface FastifyRequest {
     proxyContext?: {
       requestId: string;
+      /** Ключ в ActiveMetrics — свой, не X-Request-Id клиента (он может повторяться). */
+      liveId: string;
       idempotencyKey: string | null;
       clientId: string;
       client: ClientConfig;
@@ -103,6 +105,7 @@ export async function registerChatRoutes(
 
     req.proxyContext = {
       requestId,
+      liveId: newRequestId(),
       idempotencyKey,
       clientId: client.clientId,
       client,
@@ -138,8 +141,8 @@ export async function registerChatRoutes(
   // Клиент оборвал соединение до ответа — освобождаем слот и отменяем upstream.
   app.addHook('onRequestAbort', async (req) => {
     releaseAdmission(req, deps);
-    const rid = req.proxyContext?.requestId;
-    if (rid) deps.activeMetrics.abort(rid);
+    const live = req.proxyContext?.liveId;
+    if (live) deps.activeMetrics.abort(live);
   });
 
   app.post(
@@ -208,7 +211,7 @@ async function handleChat(
     deps.config.MIN_REMAINING_MS,
   );
   const abort = new AbortController();
-  deps.activeMetrics.register(ctx.requestId, ctx.clientId, ctx.admitted === true, deadline.deadlineAt, abort);
+  deps.activeMetrics.register(ctx.liveId, ctx.clientId, ctx.admitted === true, deadline.deadlineAt, abort, { requestId: ctx.requestId });
 
   const clientQueue = deps.fairness.queueFor(ctx.clientId);
   // id генерируется здесь, но в ledger попадает только через фабрику — то есть только у
@@ -272,7 +275,7 @@ async function handleChat(
       result = await factory();
     }
   } catch (err) {
-    deps.activeMetrics.unregister(ctx.requestId);
+    deps.activeMetrics.unregister(ctx.liveId);
     if (err instanceof ActiveDedupFullError) {
       reply.header('Retry-After', '10');
       reply.code(503).send({
@@ -291,7 +294,7 @@ async function handleChat(
     reply.code(500).send({ error: { code: 'internal', message: 'internal proxy error' } });
     return;
   } finally {
-    deps.activeMetrics.unregister(ctx.requestId);
+    deps.activeMetrics.unregister(ctx.liveId);
   }
 
   recordRequest(deps, entry(), outcomeOf(result));

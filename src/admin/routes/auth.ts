@@ -47,9 +47,13 @@ export async function registerAuthRoutes(app: FastifyInstance, ctx: AdminCtx): P
     }
     if (out.kind === 'invalid') {
       // Один ответ для неверного пароля, несуществующего и отключённого логина.
-      ctx.audit.record({ adminId: null, ip: req.ip }, 'auth.login_failed', 'admin', null, { login: body.login, failures: out.failures });
+      // Логин пишем, только если такой админ есть: иначе в журнал и в Telegram попал бы пароль,
+      // по ошибке набранный в поле логина.
+      const known = ctx.repos.adminUsers.getByLogin(body.login.trim()) !== null;
+      const shownLogin = known ? body.login.trim() : null;
+      ctx.audit.record({ adminId: null, ip: req.ip }, 'auth.login_failed', 'admin', null, { login: shownLogin, knownLogin: known, failures: out.failures });
       if (out.failures >= cfg.ADMIN_LOGIN_MAX_ATTEMPTS) {
-        ctx.alerts.onAdminLoginFailures(body.login, req.ip, out.failures).catch(() => undefined);
+        ctx.alerts.onAdminLoginFailures(shownLogin, req.ip, out.failures).catch(() => undefined);
       }
       sendError(reply, 401, 'invalid_credentials', 'invalid login or password');
       return;
@@ -103,6 +107,10 @@ export async function registerAuthRoutes(app: FastifyInstance, ctx: AdminCtx): P
       if (!body) return;
       const out = await ctx.sessions.changePassword(req.adminSession!.adminId, body.current, body.next);
       if (out.kind === 'busy') return sendError(reply, 503, 'busy', 'server is busy, retry in a few seconds');
+      if (out.kind === 'locked') {
+        reply.header('retry-after', String(out.retryAfterSec));
+        return sendError(reply, 429, 'rate_limited', 'too many failed attempts', { retryAfterSec: out.retryAfterSec });
+      }
       if (out.kind === 'weak') return sendError(reply, 400, 'invalid_request', out.message, { issues: [{ path: 'next', message: out.message }] });
       if (out.kind === 'invalid') return sendError(reply, 400, 'invalid_credentials', 'current password is wrong', { issues: [{ path: 'current', message: 'wrong password' }] });
       ctx.audit.record({ adminId: req.adminSession!.adminId, ip: req.ip }, 'auth.password_changed', 'admin', req.adminSession!.adminId);

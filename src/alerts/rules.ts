@@ -21,7 +21,8 @@ export type AlertKind =
   | 'daily_digest'
   | 'admin_login_failures'
   | 'admin_session_reuse'
-  | 'agent_auth_failures';
+  | 'agent_auth_failures'
+  | 'admin_provider_origin_changed';
 
 const COOLDOWNS_MS = new Map<AlertKind, number>([
   ['openrouter_401', 0],
@@ -39,6 +40,7 @@ const COOLDOWNS_MS = new Map<AlertKind, number>([
   ['admin_login_failures', 30 * 60_000],
   ['admin_session_reuse', 0],
   ['agent_auth_failures', 30 * 60_000],
+  ['admin_provider_origin_changed', 0],
 ]);
 
 /** Telegram parse_mode=HTML: всё, что пришло из данных (имена провайдеров, логины), экранируем. */
@@ -150,11 +152,21 @@ export class AlertEngine {
     await this.checkErrorRate(contour);
   }
 
-  async onAdminLoginFailures(login: string, ip: string, count: number): Promise<void> {
+  /** login=null — такого админа нет (введённое не показываем: там мог оказаться пароль). */
+  async onAdminLoginFailures(login: string | null, ip: string, count: number): Promise<void> {
+    const who = login === null ? 'несуществующего логина' : `«${esc(login)}»`;
     await this.fire(
       'admin_login_failures',
-      `🔐 Админка: ${count} неудачных входов для «${esc(login)}», последний IP ${esc(ip)}.`,
-      `admin_login_failures:${login.toLowerCase()}`,
+      `🔐 Админка: ${count} неудачных входов для ${who}, последний IP ${esc(ip)}.`,
+      `admin_login_failures:${login === null ? '(unknown)' : login.toLowerCase()}`,
+    );
+  }
+
+  async onProviderOriginChanged(provider: string, from: string, to: string, ip: string): Promise<void> {
+    await this.fire(
+      'admin_provider_origin_changed',
+      `🔑 Админка: у провайдера «${esc(provider)}» сменён адрес ${esc(from)} → ${esc(to)} (IP ${esc(ip)}). ` +
+        'Ключ и заголовки введены заново. Если это были не вы — отзовите ключ у провайдера.',
     );
   }
 
