@@ -60,22 +60,46 @@ export class ProviderLimiter {
   }
 }
 
-/** Скользящий счётчик неудачных аутентификаций для алерта (без привязки к cooldown Telegram). */
+/**
+ * Скользящий счётчик неудачных аутентификаций для алерта.
+ *
+ * Эндпоинт публичный, поэтому поток неверных токенов не должен ни раздувать память, ни делать
+ * каждый отказ O(n): события хранятся с потолком, топ IP считается только при отправке
+ * алерта, а сама отправка — не чаще раза в минуту (cooldown Telegram — ещё одна ступень).
+ */
 export class AuthFailureMonitor {
+  static readonly MAX_EVENTS = 5_000;
   private events: Array<{ ts: number; ip: string }> = [];
+  private lastNotifiedAt = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly windowMs: number,
     private readonly now: () => number = Date.now,
+    private readonly notifyEveryMs = 60_000,
   ) {}
 
-  record(ip: string): { count: number; topIps: string[] } {
+  /** Регистрирует отказ; возвращает число отказов в окне (не больше MAX_EVENTS). */
+  record(ip: string): number {
     const now = this.now();
     this.events.push({ ts: now, ip });
-    this.events = this.events.filter((e) => now - e.ts <= this.windowMs);
+    let expired = 0;
+    while (expired < this.events.length && now - this.events[expired]!.ts > this.windowMs) expired++;
+    const overflow = Math.max(0, this.events.length - expired - AuthFailureMonitor.MAX_EVENTS);
+    if (expired + overflow > 0) this.events.splice(0, expired + overflow);
+    return this.events.length;
+  }
+
+  /** true — пора отправить алерт (и отметка «отправлено» уже поставлена). */
+  shouldNotify(): boolean {
+    const now = this.now();
+    if (now - this.lastNotifiedAt < this.notifyEveryMs) return false;
+    this.lastNotifiedAt = now;
+    return true;
+  }
+
+  topIps(limit = 5): string[] {
     const byIp = new Map<string, number>();
     for (const e of this.events) byIp.set(e.ip, (byIp.get(e.ip) ?? 0) + 1);
-    const topIps = [...byIp.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([ip, n]) => `${ip}×${n}`);
-    return { count: this.events.length, topIps };
+    return [...byIp.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([ip, n]) => `${ip}×${n}`);
   }
 }

@@ -71,6 +71,13 @@ class StreamTimeout extends Error {
   }
 }
 
+/**
+ * Сколько байт можно накопить до первого data-события (keep-alive комментарии и хвосты).
+ * Всё это держится в памяти до коммита, поэтому потолок здесь свой и маленький: общий лимит
+ * стрима (16 МиБ) на 32 параллельных потока дал бы полгигабайта буферов.
+ */
+const PRE_COMMIT_LIMIT_BYTES = 1024 * 1024;
+
 const TIMEOUT_MESSAGES: Record<string, string> = {
   first_event_timeout: 'the provider sent no data in time',
   deadline_exceeded: 'request deadline exceeded',
@@ -312,7 +319,7 @@ export class OpenAICompatibleClient {
         }
         const chunk = toBuffer(next.value);
         bytes += chunk.length;
-        if (bytes > policy.streamLimitBytes) throw new UpstreamResponseTooLargeError(policy.streamLimitBytes);
+        if (bytes > PRE_COMMIT_LIMIT_BYTES) throw new UpstreamResponseTooLargeError(PRE_COMMIT_LIMIT_BYTES);
         pending.push(chunk);
         events = parser.push(chunk);
       }

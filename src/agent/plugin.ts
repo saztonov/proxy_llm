@@ -86,10 +86,10 @@ export async function agentPlugin(app: FastifyInstance, opts: AgentPluginOptions
     const principal = token ? deps.registry.resolveToken(token) : null;
     if (!principal) {
       // Один ответ для отсутствующего, неизвестного, отозванного и истёкшего токена.
-      const { count, topIps } = authFailures.record(req.ip);
+      const count = authFailures.record(req.ip);
       logger.warn({ contour: 'agent', ip: req.ip, path: req.url.split('?')[0], reason: token ? 'invalid' : 'missing' }, 'agent auth failed');
-      if (count >= config.AGENT_AUTH_FAIL_ALERT_THRESHOLD) {
-        deps.alerts.onAgentAuthFailures(count, AUTH_FAILURE_WINDOW_MS, topIps).catch(() => undefined);
+      if (count >= config.AGENT_AUTH_FAIL_ALERT_THRESHOLD && authFailures.shouldNotify()) {
+        deps.alerts.onAgentAuthFailures(count, AUTH_FAILURE_WINDOW_MS, authFailures.topIps()).catch(() => undefined);
       }
       sendOpenAIError(reply, 401, 'invalid_api_key', token ? 'Incorrect API key provided.' : 'Missing API key: use the Authorization: Bearer <key> header.');
       return;

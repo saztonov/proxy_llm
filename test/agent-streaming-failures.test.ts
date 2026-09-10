@@ -81,6 +81,18 @@ describe('agent contour: streaming failures', () => {
     expect(r.json().error.code).toBe('first_event_timeout');
   });
 
+  it('a provider flooding bytes before the first event is cut at 1 MiB, before anything is sent', async () => {
+    handler = (_q, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const line = ': ' + 'x'.repeat(64 * 1024) + '\n\n';
+      for (let i = 0; i < 24; i++) res.write(line);
+    };
+    const r = await post(await start({ AGENT_UPSTREAM_MAX_ATTEMPTS: 1 }));
+    expect(r.statusCode).toBe(502);
+    expect(r.headers['content-type']).toContain('application/json');
+    expect(r.json().error.code).toBe('upstream_response_too_large');
+  });
+
   it('client disconnect mid-stream aborts the provider call and frees the slot', async () => {
     let handle: SseHandle | undefined;
     handler = (_q, res) => {

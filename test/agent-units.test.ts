@@ -54,14 +54,23 @@ describe('limiters', () => {
     now = 1000;
     expect(rl.hit('a').allowed).toBe(true);
   });
-  it('auth failure monitor counts within the window and ranks IPs', () => {
+  it('auth failure monitor counts within the window, ranks IPs and throttles alerts', () => {
     let now = 0;
-    const m = new AuthFailureMonitor(1000, () => now);
+    const m = new AuthFailureMonitor(1000, () => now, 60_000);
     m.record('1.1.1.1');
     m.record('1.1.1.1');
-    expect(m.record('2.2.2.2')).toEqual({ count: 3, topIps: ['1.1.1.1×2', '2.2.2.2×1'] });
+    expect(m.record('2.2.2.2')).toBe(3);
+    expect(m.topIps()).toEqual(['1.1.1.1×2', '2.2.2.2×1']);
+    expect(m.shouldNotify()).toBe(true);
+    expect(m.shouldNotify()).toBe(false);
     now = 2000;
-    expect(m.record('3.3.3.3').count).toBe(1);
+    expect(m.record('3.3.3.3')).toBe(1);
+  });
+  it('auth failure monitor is bounded under a flood', () => {
+    const m = new AuthFailureMonitor(60_000, () => 0);
+    let last = 0;
+    for (let i = 0; i < AuthFailureMonitor.MAX_EVENTS + 500; i++) last = m.record(`10.0.${i % 250}.1`);
+    expect(last).toBe(AuthFailureMonitor.MAX_EVENTS);
   });
 });
 
