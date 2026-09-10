@@ -20,6 +20,11 @@ import { registerChatRoutes, ActiveMetrics } from './routes/chat-completions.js'
 import { registerHealthRoutes } from './routes/health.js';
 import { registerDashboard } from './routes/dashboard.js';
 import { dirname } from 'node:path';
+import { Agent as UndiciAgent } from 'undici';
+import { AgentRegistry } from './clients/agent-registry.js';
+import { OpenAICompatibleClient } from './upstream/openai-compatible-client.js';
+import { agentPlugin } from './agent/plugin.js';
+import { combineActiveSources } from './watchdog/composite-source.js';
 
 export interface AppBundle {
   app: FastifyInstance;
@@ -38,6 +43,10 @@ export interface AppBundle {
   stopPriceSync: () => void;
   /** Все тикеры разом (остановка сервиса). */
   stopTickers: () => void;
+  agentRegistry: AgentRegistry;
+  agentFairness: FairnessManager;
+  agentActiveMetrics: ActiveMetrics;
+  stopAgentReconciler: () => void;
   /** Живые запросы всех контуров — для drain и abortAll при остановке. */
   activeSources: ActiveMetrics[];
 }
@@ -78,6 +87,33 @@ export async function buildApp(config: Config): Promise<AppBundle> {
   registry.onReload((clients) => fairness.syncClients(clients));
   const activeMetrics = new ActiveMetrics();
 
+  // Агентский контур: свой реестр, свой fairness (агенты не выедают очередь порталов и
+  // наоборот), свои живые запросы и отдельный пул соединений к провайдерам — десятки долгих
+  // стримов не должны занимать сокеты, через которые ходят сайты.
+  const agentRegistry = new AgentRegistry({
+    config,
+    agentTokens: repos.agentTokens,
+    providers: repos.providers,
+    settings: repos.settings,
+    secrets,
+    logger,
+  });
+  const agentFairness = new FairnessManager(
+    agentRegistry,
+    config.AGENT_QUEUE_CONCURRENCY,
+    config.AGENT_QUEUE_MAX_PENDING,
+    () => 0,
+    1,
+  );
+  agentRegistry.onReload((tenants) => agentFairness.syncClients(tenants));
+  const agentActiveMetrics = new ActiveMetrics();
+  const agentDispatcher = new UndiciAgent({
+    connections: config.AGENT_UPSTREAM_POOL_CONNECTIONS,
+    pipelining: 1,
+    keepAliveTimeout: 30_000,
+  });
+  const agentClient = new OpenAICompatibleClient(config, logger, agentDispatcher);
+
   const client = new OpenRouterClient(config, logger);
 
   const telegram = new TelegramSender(
@@ -96,13 +132,14 @@ export async function buildApp(config: Config): Promise<AppBundle> {
       alertDiskFreeMinBytes: config.ALERT_DISK_FREE_MIN_BYTES,
       dbPath: config.DB_PATH,
     },
-    activeMetrics,
+    combineActiveSources(activeMetrics, agentActiveMetrics),
     alerts,
     logger,
   );
 
   const stopDigest = startDailyDigest(alerts, logger);
   const stopFairnessReconciler = startFairnessReconciler(fairness, activeMetrics, logger);
+  const stopAgentReconciler = startFairnessReconciler(agentFairness, agentActiveMetrics, logger);
   const stopPriceSync = startPriceSyncScheduler({ config, billing, logger });
 
   const app = Fastify({
@@ -144,6 +181,23 @@ export async function buildApp(config: Config): Promise<AppBundle> {
     activeMetrics,
   });
   await registerDashboard(app, { config, repo, billing, activeMetrics });
+  await app.register(agentPlugin, {
+    prefix: '/agent/v1',
+    deps: {
+      config,
+      logger,
+      registry: agentRegistry,
+      fairness: agentFairness,
+      activeMetrics: agentActiveMetrics,
+      client: agentClient,
+      repo,
+      billing,
+      alerts,
+    },
+  });
+  app.addHook('onClose', async () => {
+    await agentDispatcher.close();
+  });
 
   return {
     app,
@@ -164,8 +218,13 @@ export async function buildApp(config: Config): Promise<AppBundle> {
       stopWatchdog();
       stopDigest();
       stopFairnessReconciler();
+      stopAgentReconciler();
       stopPriceSync();
     },
-    activeSources: [activeMetrics],
+    activeSources: [activeMetrics, agentActiveMetrics],
+    agentRegistry,
+    agentFairness,
+    agentActiveMetrics,
+    stopAgentReconciler,
   };
 }

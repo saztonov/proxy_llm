@@ -43,7 +43,8 @@ function installShutdownHandlers(drainMs: number, bundle: AppBundle): void {
   process.on('SIGHUP', () => {
     try {
       const diff = bundle.registry.reload();
-      logger.info({ ...diff }, 'SIGHUP: site registry reloaded');
+      bundle.agentRegistry.reload();
+      logger.info({ ...diff }, 'SIGHUP: site and agent registries reloaded');
     } catch (err) {
       logger.error({ err: sanitizeErrorForLog(err) }, 'SIGHUP reload failed; previous snapshot kept');
     }
