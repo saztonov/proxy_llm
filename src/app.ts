@@ -24,6 +24,7 @@ import { Agent as UndiciAgent } from 'undici';
 import { AgentRegistry } from './clients/agent-registry.js';
 import { OpenAICompatibleClient } from './upstream/openai-compatible-client.js';
 import { agentPlugin } from './agent/plugin.js';
+import { adminPlugin } from './admin/plugin.js';
 import { combineActiveSources } from './watchdog/composite-source.js';
 
 export interface AppBundle {
@@ -197,6 +198,23 @@ export async function buildApp(config: Config): Promise<AppBundle> {
   });
   app.addHook('onClose', async () => {
     await agentDispatcher.close();
+  });
+  await app.register(adminPlugin, {
+    prefix: '/admin',
+    deps: {
+      config,
+      logger,
+      db: db.db,
+      repos,
+      secrets,
+      siteRegistry: registry,
+      agentRegistry,
+      fairness,
+      agentFairness,
+      activeMetrics,
+      agentActiveMetrics,
+      alerts,
+    },
   });
 
   return {
