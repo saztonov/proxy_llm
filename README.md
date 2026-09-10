@@ -1,6 +1,12 @@
 # proxy_llm
 
-OpenAI-совместимый прокси между PassDesk и OpenRouter с журналом, алертами и dashboard.
+OpenAI-совместимый прокси между порталами и LLM-провайдерами с журналом, учётом расходов, алертами и админ-сайтом.
+
+Два контура:
+- **сайты** (`/api/v1`) — порталы PassDesk, FOT, MatCheck, EstiMat, как и раньше;
+- **агенты** (`/agent/v1`) — OpenAI API для Cursor и других агентов сотрудников: ключ на отдел или сотрудника, модель назначает администратор ([docs/agents.md](docs/agents.md)).
+
+Управление — админ-сайт `/admin`: сайты и токены, справочник отделов и сотрудников, провайдеры, агентские ключи, статистика, аудит.
 
 ## Зачем
 
@@ -34,7 +40,7 @@ npm run dev
 npm test
 ```
 
-60 тестов, покрывают: классификацию ответов (включая HTTP 200 + body.error и malformed_success), retry policy с Retry-After в двух форматах, dedup с hard cap, header whitelist, response body limit, deadline-aware behavior, admission control, streaming rejection.
+Около 370 тестов: классификация ответов и retry policy, dedup, admission control и fairness обоих контуров, реестры в БД и их горячая перезагрузка, стриминг агентов (обрыв клиента, таймауты, usage после finish_reason), 40 одновременных пользователей, авторизация админки (ротация refresh, отзыв, CSRF, Origin), CLI, остановка сервиса.
 
 ### Build
 
@@ -47,7 +53,8 @@ npm start           # node dist/server.js
 
 - **[docs/operator-guide.md](docs/operator-guide.md)** — полное руководство админа: подготовка VPS, развёртывание с нуля, генерация и передача токена в PassDesk, проверка end-to-end, эксплуатация, ротация секретов. Начинать с него.
 - [deploy/INSTALL.md](deploy/INSTALL.md) — более компактный справочник команд.
-- [docs/vps-update.md](docs/vps-update.md) — чек-лист обновления уже работающего VPS и подключения нового потребителя (токены, лимиты, модели).
+- [docs/vps-update.md](docs/vps-update.md) — чек-лист обновления уже работающего VPS и подключения нового потребителя (токены, лимиты, модели). **§0a — разовый переход на версию с админкой и агентским контуром.**
+- [docs/agents.md](docs/agents.md) — подключение Cursor, Continue, Cline, Aider и OpenAI SDK к агентскому контуру; ёмкость и лимиты.
 
 ### Миграция PassDesk
 
@@ -57,7 +64,7 @@ npm start           # node dist/server.js
 
 ## Что прокси гарантирует
 
-- **`stream:true` запрещён** (400) — упрощает retry/timeout/journal.
+- **`stream:true` в контуре сайтов запрещён** (400) — упрощает retry/timeout/journal. Агентский контур стримит.
 - **`model` — по политике клиента** из `clients.json`. `allowedModels` пуст → клиентский `model` игнорируется, идёт `defaultModel` клиента + его fallback-цепочка (поведение по умолчанию). Список или `["*"]` → клиент выбирает сам; модель вне списка → 400 `model_not_allowed`. Явный выбор **отключает** fallback-цепочку. Заглушки `proxy`/`default`/`auto` в поле `model` = «модель не выбрана» → дефолт клиента. Подробнее — [docs/vps-update.md](docs/vps-update.md) §4a.
 - **Всегда молча удаляются** из payload: `models` (свою fallback-цепочку прислать нельзя), `provider`, `route`, `transforms`, `plugins`, `stream_options`, `debug`.
 - **Qwen (`qwen/*`)** — прокси сам добавляет `reasoning.effort=none`, `enable_thinking=false` и `chat_template_kwargs.enable_thinking=false`, если клиент их не задал явно (hybrid-модели иначе съедают `max_tokens` на thinking).
@@ -91,7 +98,11 @@ proxy_llm/
 │   ├── server.ts                 bootstrap + graceful shutdown
 │   ├── app.ts                    сборка Fastify app (для тестов и server.ts)
 │   ├── config.ts                 zod-схема env
-│   ├── routes/                   HTTP endpoints
+│   ├── routes/                   HTTP endpoints контура сайтов и /dashboard
+│   ├── agent/                    агентский контур /agent/v1 (auth, стриминг, лимиты)
+│   ├── admin/                    админ-сайт /admin (сессии, CSRF, JSON API, рендер)
+│   ├── journal/                  общий журнал и ledger для двух контуров
+│   ├── cli/                      admin.js: первый админ, токены, импорт, rekey
 │   ├── upstream/                 OpenRouter client + retry + classification
 │   ├── dedup/                    active-request dedup
 │   ├── auth/                     Bearer / Basic

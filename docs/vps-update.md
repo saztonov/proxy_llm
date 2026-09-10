@@ -30,6 +30,43 @@ node -v && npm -v                                      # обязана быть
 
 ---
 
+## 0a. Переход на версию с админкой и агентским контуром (разово)
+
+Для порталов не меняется ничего: те же адрес, токены и поведение. При первом старте реестр клиентов переезжает из `clients.json` и `PROXY_INBOUND_TOKEN` в БД, дальше им управляют `/admin` и CLI.
+
+1. Бэкап БД, `.env` и `clients.json` — как в §1.
+2. Добавить в `/etc/proxy_llm/.env` два обязательных секрета — без них сервис не стартует:
+   ```bash
+   echo "SECRETS_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> /etc/proxy_llm/.env
+   echo "ADMIN_JWT_SECRET=$(openssl rand -hex 32)" >> /etc/proxy_llm/.env
+   ```
+   `SECRETS_ENCRYPTION_KEY` сохранить в менеджер паролей отдельно от бэкапов БД: без него ключи провайдеров в БД не расшифровать.
+3. Бюджет памяти: `MEMORY_BUDGET_BYTES` по умолчанию 400 МиБ; при `QUEUE_MAX_PENDING=6` и дефолтах агентов оценка около 348 МиБ. Держать ниже `MemoryMax` юнита (на машине 600M) с запасом на сам Node.
+4. Сборка и рестарт — §1. В логе старта не должно быть `memory budget exceeded`.
+5. Проверить импорт реестра:
+   ```bash
+   journalctl -u proxy_llm -n 100 | grep 'site registry imported'
+   sudo -u proxy_llm sqlite3 /var/lib/proxy_llm/prod.db \
+     "SELECT value FROM settings WHERE key='site_bootstrap';
+      SELECT client_id, enabled, allowed_models_json FROM site_clients;
+      SELECT client_id, count(*) FROM site_tokens WHERE revoked_at IS NULL GROUP BY client_id;"
+   ```
+   Все прежние клиенты на месте, политика совпадает с `clients.json`, у `passdesk` есть токен.
+6. Дождаться боевого запроса PassDesk: в `requests` у него `contour='site'` и заполнен `token_id`.
+7. Первый администратор (пароль печатается один раз):
+   ```bash
+   cd /opt/proxy_llm
+   sudo -u proxy_llm bash -c 'set -a; . /etc/proxy_llm/.env; set +a; /opt/node-v22/bin/node dist/cli/admin.js create --login admin --generate'
+   ```
+8. nginx: добавить `location /admin` (allowlist IP админа) и `location /agent/` из `deploy/nginx/proxy_llm.conf`, затем `nginx -t && systemctl reload nginx`. Проверить `worker_connections` (десятки стримов = вдвое больше соединений nginx).
+9. Войти в `/admin`: «Сайты» — клиенты с прежней политикой; «Провайдеры» — завести OpenRouter; «Настройки» — модель по умолчанию; «Справочник» и «Агентские ключи» — первый ключ; проверить его по `docs/agents.md`.
+
+После перехода:
+- `clients.json` больше не читается: при заданном `CLIENTS_CONFIG_PATH` в логе предупреждение. Правки — в админке; повторный импорт — `admin.js import-clients --file <путь>`.
+- `PROXY_INBOUND_TOKEN` стал обычным токеном `passdesk`. Ротация — выпустить новый токен passdesk в админке и отозвать старый; переменную можно убрать из `.env`.
+- После ручных правок БД или CLI: `systemctl kill -s HUP proxy_llm` перечитывает реестры без рестарта.
+- Откат кода (§2) возможен: старая версия игнорирует новые таблицы, но изменения токенов и политик, сделанные в админке, не увидит — она снова читает `clients.json`.
+
 ## 1. Обновление кода
 
 Всё от `root`, после шага 0.
@@ -106,6 +143,9 @@ sudo -u proxy_llm /opt/proxy_llm/scripts/backup-db.sh && echo "backup OK"
 
 ## 3. Включение реестра клиентов (разово)
 
+> С версии с админкой (2026-09) клиенты, токены и политики штатно меняются в `/admin` → «Сайты», без рестарта. `clients.json` читается только при первом старте новой версии (§0a); раздел ниже — для первичной настройки и аварийного пути.
+
+
 Пока `CLIENTS_CONFIG_PATH` не задан, работает legacy-режим: валиден только `PROXY_INBOUND_TOKEN`, он же `clientId=passdesk`. Чтобы завести несколько потребителей — создать файл сразу с первым клиентом:
 
 ```bash
@@ -154,6 +194,9 @@ python3 -m json.tool /etc/proxy_llm/clients.json > /dev/null && echo OK
 ---
 
 ## 4. Подключение нового потребителя
+
+> С версии с админкой (2026-09) клиенты, токены и политики штатно меняются в `/admin` → «Сайты», без рестарта. `clients.json` читается только при первом старте новой версии (§0a); раздел ниже — для первичной настройки и аварийного пути.
+
 
 **Где ведутся токены:** `/etc/proxy_llm/clients.json` на VPS. В git его нет и быть не должно — в репозитории только шаблон `deploy/clients.example.json`. Второе место хранения — менеджер секретов (1Password/Vaultwarden): после выдачи открытый токен взять больше неоткуда.
 
@@ -341,6 +384,9 @@ sqlite3 /var/lib/proxy_llm/prod.db \
 ---
 
 ## 5. Ротация и отзыв токена
+
+> С версии с админкой (2026-09) клиенты, токены и политики штатно меняются в `/admin` → «Сайты», без рестарта. `clients.json` читается только при первом старте новой версии (§0a); раздел ниже — для первичной настройки и аварийного пути.
+
 
 `tokens` — массив, поэтому ротация возможна без окна отказов: какое-то время валидны оба токена.
 
