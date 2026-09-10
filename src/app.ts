@@ -81,7 +81,9 @@ export async function buildApp(config: Config): Promise<AppBundle> {
   const app = Fastify({
     logger: false,
     bodyLimit: config.BODY_LIMIT_BYTES,
-    trustProxy: true,
+    // Доверяем ровно одному хопу — локальному nginx. `true` брал бы крайний левый адрес из
+    // X-Forwarded-For, который клиент подделывает сам: rate-limit и журнал видели бы чужой IP.
+    trustProxy: 1,
     disableRequestLogging: true,
   });
 

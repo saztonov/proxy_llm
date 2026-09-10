@@ -14,10 +14,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "migrate": "node dist/storage/migrate.js"
+    "admin": "node dist/cli/admin.js"
   },
   "dependencies": {
     "@fastify/basic-auth": "^6.1.0",
+    "@fastify/cookie": "^11.1.2",
     "@fastify/rate-limit": "^10.2.1",
     "better-sqlite3": "^11.6.0",
     "eta": "^3.5.0",

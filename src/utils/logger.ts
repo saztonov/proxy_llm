@@ -16,6 +16,14 @@ const SECRET_REDACT_PATHS = [
   'err.request',
   'err.response.config',
   'err.response.data',
+  // Админка и агентский контур: пароли, выданные токены, cookie, CSRF, секретные заголовки.
+  '*.password',
+  '*.plaintext',
+  '*.refresh',
+  '*.extraHeaders',
+  'req.headers.cookie',
+  '*.headers.cookie',
+  '*["x-csrf-token"]',
 ];
 
 export const logger = pino({

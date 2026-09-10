@@ -1,10 +1,17 @@
-import { loadConfig } from './config.js';
+import { loadConfig, estimateMemoryBudget } from './config.js';
 import { logger } from './utils/logger.js';
 import { buildApp, type AppBundle } from './app.js';
 import { sanitizeErrorForLog } from './utils/sanitize-error.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  const mem = estimateMemoryBudget(config);
+  if (!mem.ok) {
+    logger.warn(
+      { estimatedBytes: mem.estimatedBytes, budgetBytes: mem.budgetBytes },
+      'memory budget exceeded: queued request bodies may not fit into MemoryMax (see MEMORY_BUDGET_BYTES)',
+    );
+  }
   const bundle = await buildApp(config);
 
   await bundle.startupAlert.fire();

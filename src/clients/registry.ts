@@ -158,8 +158,8 @@ export function loadClientRegistry(config: Config): ClientRegistry {
   }
 
   // Гарантия совместимости: legacy-токен всегда резолвится (если ещё не занят файлом).
-  const legacyHash = sha256Hex(config.PROXY_INBOUND_TOKEN);
-  if (!byHash.has(legacyHash)) {
+  const legacyHash = config.PROXY_INBOUND_TOKEN ? sha256Hex(config.PROXY_INBOUND_TOKEN) : null;
+  if (legacyHash !== null && !byHash.has(legacyHash)) {
     const legacy = legacyClient(config);
     // Не пересоздаём клиента 'passdesk', если он уже описан в файле — просто вешаем на него токен.
     const existing = unique.find((c) => c.clientId === legacy.clientId);
