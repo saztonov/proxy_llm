@@ -753,9 +753,12 @@ fallback-цепочку** — в OpenRouter уходит одиночный `mod
 `"proxy"` (безопасны), но **PassDesk шлёт реальное имя модели** из `OCR_OPENROUTER_MODEL` —
 при включении оно оживёт и молча изменит роутинг и биллинг.
 
-Применить: `systemctl restart proxy_llm` — реестр читается только на старте, а `ExecReload`
-в юните не определён, поэтому `reload` вернёт «Job type reload is not applicable». Проверить:
-`journalctl -u proxy_llm --since '1 min ago'` — не должно быть `ClientRegistryError`.
+Применить (версия до админки): `systemctl restart proxy_llm` — она читает реестр только на старте,
+а `ExecReload` в юните не определён. Проверить: `journalctl -u proxy_llm --since '1 min ago'` —
+не должно быть `ClientRegistryError`.
+
+С версии с админкой (2026-09) реестр живёт в БД: политика клиента меняется в `/admin` → «Сайты»
+и применяется сразу, без рестарта; `clients.json` после первого старта не читается.
 
 ### 8.2. Онбординг нового клиента
 
