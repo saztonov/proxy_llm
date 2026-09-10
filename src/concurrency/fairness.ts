@@ -1,5 +1,13 @@
 import PQueue from 'p-queue';
-import type { ClientConfig, ClientRegistry } from '../clients/registry.js';
+import type { ClientConfig } from '../clients/registry.js';
+
+/** Всё, что fairness нужно от арендатора: сайт-клиент или принципал агентского контура. */
+export type FairnessTenant = Pick<ClientConfig, 'clientId' | 'maxConcurrency' | 'maxPending'>;
+
+/** Источник арендаторов для предсоздания слотов (реестр сайтов или агентов). */
+export interface TenantSource {
+  clients(): readonly FairnessTenant[];
+}
 
 export type AdmitResult = 'ok' | 'client_full' | 'global_full' | 'dedup_full';
 
@@ -20,6 +28,8 @@ interface ClientSlot {
   active: number;
   maxConcurrency: number;
   maxPending: number;
+  /** Арендатор исчез из реестра, но у него ещё есть живые запросы: слот удалится после release. */
+  retired: boolean;
 }
 
 /**
@@ -38,7 +48,7 @@ export class FairnessManager {
   private globalActive = 0;
 
   constructor(
-    registry: ClientRegistry,
+    registry: TenantSource,
     private readonly globalConcurrency: number,
     private readonly globalMaxPending: number,
     private readonly dedupSize: () => number,
@@ -48,8 +58,11 @@ export class FairnessManager {
     for (const c of registry.clients()) this.ensureSlot(c);
   }
 
-  /** Предсоздаёт слот клиента (клиенты статичны — из реестра, без динамических утечек). */
-  private ensureSlot(c: ClientConfig): ClientSlot {
+  /**
+   * Слот арендатора; лимиты берутся из переданного (актуального) конфига, поэтому правка лимитов
+   * в админке применяется к следующему же запросу без рестарта.
+   */
+  private ensureSlot(c: FairnessTenant): ClientSlot {
     let slot = this.slots.get(c.clientId);
     if (!slot) {
       slot = {
@@ -57,17 +70,43 @@ export class FairnessManager {
         active: 0,
         maxConcurrency: c.maxConcurrency,
         maxPending: c.maxPending,
+        retired: false,
       };
       this.slots.set(c.clientId, slot);
+      return slot;
     }
+    if (slot.maxConcurrency !== c.maxConcurrency) {
+      slot.maxConcurrency = c.maxConcurrency;
+      // Сеттер PQueue применяется на лету: при увеличении сразу стартуют ожидающие задачи.
+      slot.queue.concurrency = c.maxConcurrency;
+    }
+    slot.maxPending = c.maxPending;
+    slot.retired = false;
     return slot;
+  }
+
+  /**
+   * Приводит слоты к списку арендаторов после reload реестра: новым — слот, изменённым — новые
+   * лимиты, исчезнувшим — удаление (если простаивают) либо пометка retired до release.
+   */
+  syncClients(tenants: readonly FairnessTenant[]): void {
+    const live = new Set<string>();
+    for (const t of tenants) {
+      live.add(t.clientId);
+      this.ensureSlot(t);
+    }
+    for (const [id, slot] of this.slots) {
+      if (live.has(id)) continue;
+      if (slot.active === 0) this.slots.delete(id);
+      else slot.retired = true;
+    }
   }
 
   /**
    * Атомарная (в пределах тика event-loop) проверка+резервирование слота.
    * Вызывать СИНХРОННО, без await до/после в admission-хуке.
    */
-  tryAdmit(client: ClientConfig): AdmitResult {
+  tryAdmit(client: FairnessTenant): AdmitResult {
     const slot = this.ensureSlot(client);
     if (slot.active >= slot.maxConcurrency + slot.maxPending) return 'client_full';
     if (this.globalActive >= this.globalMaxPending) return 'global_full';
@@ -80,7 +119,10 @@ export class FairnessManager {
   /** Освобождает зарезервированный слот. Идемпотентность — на стороне вызывающего. */
   release(clientId: string): void {
     const slot = this.slots.get(clientId);
-    if (slot) slot.active = Math.max(0, slot.active - 1);
+    if (slot) {
+      slot.active = Math.max(0, slot.active - 1);
+      if (slot.retired && slot.active === 0) this.slots.delete(clientId);
+    }
     this.globalActive = Math.max(0, this.globalActive - 1);
   }
 

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import type { Config } from '../config.js';
 import { clientsFileSchema, type ClientEntry } from './registry-schema.js';
+import { sha256Hex } from './tokens.js';
 
 export const DEFAULT_CLIENTS_PATH = '/etc/proxy_llm/clients.json';
 
@@ -22,14 +22,12 @@ export interface ClientConfig {
   openrouterApiKey?: string;
   /** Тег `source` для журнала (по умолчанию = clientId). */
   source: string;
+  /** site_tokens.id токена, которым аутентифицирован запрос (SiteRegistry). */
+  tokenId?: number;
 }
 
 export class ClientRegistryError extends Error {
   override readonly name = 'ClientRegistryError';
-}
-
-function sha256Hex(s: string): string {
-  return createHash('sha256').update(s, 'utf8').digest('hex');
 }
 
 /**
@@ -58,7 +56,7 @@ export class ClientRegistry {
   }
 }
 
-function resolveEntry(entry: ClientEntry, config: Config): ClientConfig {
+export function resolveEntry(entry: ClientEntry, config: Config): ClientConfig {
   return {
     clientId: entry.clientId,
     defaultModel: entry.defaultModel ?? config.OPENROUTER_MODEL,
@@ -76,14 +74,14 @@ function resolveEntry(entry: ClientEntry, config: Config): ClientConfig {
 }
 
 /** Хэши всех токенов клиента (открытые → sha256, плюс уже готовые sha256). */
-function entryHashes(entry: ClientEntry): string[] {
+export function entryHashes(entry: ClientEntry): string[] {
   const fromPlain = (entry.tokens ?? []).map(sha256Hex);
   const fromHashes = (entry.tokenSha256 ?? []).map((h) => h.toLowerCase());
   return [...fromPlain, ...fromHashes];
 }
 
 /** Legacy single-tenant клиент из env (обратная совместимость: токен всегда резолвится). */
-function legacyClient(config: Config): ClientConfig {
+export function legacyClient(config: Config): ClientConfig {
   return {
     clientId: 'passdesk',
     defaultModel: config.OPENROUTER_MODEL,
@@ -97,18 +95,22 @@ function legacyClient(config: Config): ClientConfig {
   };
 }
 
+export interface ClientsFileContent {
+  path: string;
+  entries: ClientEntry[];
+}
+
 /**
- * Загружает реестр.
- * - Путь НЕ задан (env отсутствует) и дефолтного файла нет → только legacy-клиент.
+ * Читает и валидирует clients.json.
+ * - Путь НЕ задан (env отсутствует) и дефолтного файла нет → null.
  * - Путь задан ЯВНО, но файла нет → fail-fast (сломанный/отсутствующий явный конфиг опасен).
- * - Файл присутствует, но битый JSON / не проходит zod / дубли → fail-fast.
- * - PROXY_INBOUND_TOKEN всегда резолвится (добавляется как legacy, если его хэша ещё нет).
+ * - Файл есть, но битый JSON / не проходит zod / дубли clientId или токенов → fail-fast.
  */
-export function loadClientRegistry(config: Config): ClientRegistry {
+export function readClientsFile(config: Config): ClientsFileContent | null {
   const explicit = config.CLIENTS_CONFIG_PATH !== undefined;
   const path = config.CLIENTS_CONFIG_PATH ?? DEFAULT_CLIENTS_PATH;
 
-  let raw: string | null = null;
+  let raw: string;
   try {
     raw = readFileSync(path, 'utf8');
   } catch (err) {
@@ -117,44 +119,55 @@ export function loadClientRegistry(config: Config): ClientRegistry {
       if (explicit) {
         throw new ClientRegistryError(`CLIENTS_CONFIG_PATH задан (${path}), но файл не найден`);
       }
-      raw = null; // дефолтный путь без файла → legacy-only
-    } else {
-      throw new ClientRegistryError(`не удалось прочитать ${path}: ${(err as Error).message}`);
+      return null;
     }
+    throw new ClientRegistryError(`не удалось прочитать ${path}: ${(err as Error).message}`);
   }
 
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new ClientRegistryError(`невалидный JSON в ${path}: ${(err as Error).message}`);
+  }
+  const result = clientsFileSchema.safeParse(parsed);
+  if (!result.success) {
+    const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+    throw new ClientRegistryError(`невалидный ${path}: ${issues}`);
+  }
+
+  const seenClientIds = new Set<string>();
+  const seenHashes = new Set<string>();
+  for (const entry of result.data.clients) {
+    if (seenClientIds.has(entry.clientId)) {
+      throw new ClientRegistryError(`дублирующийся clientId: ${entry.clientId}`);
+    }
+    seenClientIds.add(entry.clientId);
+    for (const h of entryHashes(entry)) {
+      if (seenHashes.has(h)) {
+        throw new ClientRegistryError(`дублирующийся токен (hash) у clientId=${entry.clientId}`);
+      }
+      seenHashes.add(h);
+    }
+  }
+  return { path, entries: result.data.clients };
+}
+
+/**
+ * Файловый реестр (без БД). В рантайме сервиса больше не используется — там SiteRegistry поверх
+ * SQLite, куда clients.json импортируется один раз (site-bootstrap.ts). Остаётся как валидатор
+ * файла и эталон семантики: SiteRegistry обязан резолвить токены ровно так же.
+ * PROXY_INBOUND_TOKEN резолвится всегда (добавляется как legacy, если его хэша ещё нет).
+ */
+export function loadClientRegistry(config: Config): ClientRegistry {
+  const file = readClientsFile(config);
   const byHash = new Map<string, ClientConfig>();
   const unique: ClientConfig[] = [];
-  const seenClientIds = new Set<string>();
 
-  if (raw !== null) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      throw new ClientRegistryError(`невалидный JSON в ${path}: ${(err as Error).message}`);
-    }
-    const result = clientsFileSchema.safeParse(parsed);
-    if (!result.success) {
-      const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
-      throw new ClientRegistryError(`невалидный ${path}: ${issues}`);
-    }
-
-    for (const entry of result.data.clients) {
-      if (seenClientIds.has(entry.clientId)) {
-        throw new ClientRegistryError(`дублирующийся clientId: ${entry.clientId}`);
-      }
-      seenClientIds.add(entry.clientId);
-
-      const cfg = resolveEntry(entry, config);
-      unique.push(cfg);
-      for (const h of entryHashes(entry)) {
-        if (byHash.has(h)) {
-          throw new ClientRegistryError(`дублирующийся токен (hash) у clientId=${entry.clientId}`);
-        }
-        byHash.set(h, cfg);
-      }
-    }
+  for (const entry of file?.entries ?? []) {
+    const cfg = resolveEntry(entry, config);
+    unique.push(cfg);
+    for (const h of entryHashes(entry)) byHash.set(h, cfg);
   }
 
   // Гарантия совместимости: legacy-токен всегда резолвится (если ещё не занят файлом).

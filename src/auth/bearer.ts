@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
-import type { ClientRegistry, ClientConfig } from '../clients/registry.js';
+import type { ClientConfig } from '../clients/registry.js';
+import type { TokenResolver } from '../clients/site-registry.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -12,7 +13,7 @@ declare module 'fastify' {
  * Проверка Bearer-токена через реестр клиентов. Резолв — timing-safe (sha256 + Map,
  * см. ClientRegistry). При успехе кладёт ClientConfig в req.authClient; при неудаче — 401.
  */
-export function makeBearerAuthHook(registry: ClientRegistry) {
+export function makeBearerAuthHook(registry: TokenResolver) {
   return async function bearerAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
     const header = req.headers.authorization;
     if (typeof header !== 'string' || !header.startsWith('Bearer ')) {

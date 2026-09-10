@@ -2,11 +2,12 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import { logger } from './utils/logger.js';
 import { openDb, type DbHandle } from './storage/db.js';
-import { RequestsRepo } from './storage/requests-repo.js';
-import { BillingRepo } from './storage/billing-repo.js';
+import { createRepos, type Repos } from './storage/repos.js';
+import { SecretBox } from './storage/secret-box.js';
 import { OpenRouterClient } from './upstream/openrouter-client.js';
 import { ActiveRequests } from './dedup/active-requests.js';
-import { loadClientRegistry, type ClientRegistry } from './clients/registry.js';
+import { SiteRegistry } from './clients/site-registry.js';
+import { bootstrapSiteRegistry } from './clients/site-bootstrap.js';
 import { FairnessManager } from './concurrency/fairness.js';
 import { startFairnessReconciler } from './concurrency/reconcile.js';
 import { TelegramSender } from './alerts/telegram.js';
@@ -23,7 +24,9 @@ import { dirname } from 'node:path';
 export interface AppBundle {
   app: FastifyInstance;
   db: DbHandle;
-  registry: ClientRegistry;
+  registry: SiteRegistry;
+  repos: Repos;
+  secrets: SecretBox;
   fairness: FairnessManager;
   active: ActiveRequests;
   activeMetrics: ActiveMetrics;
@@ -37,10 +40,29 @@ export interface AppBundle {
 
 export async function buildApp(config: Config): Promise<AppBundle> {
   const db = openDb(config.DB_PATH);
-  const repo = new RequestsRepo(db.db);
-  const billing = new BillingRepo(db.db);
+  const repos = createRepos(db.db);
+  const repo = repos.requests;
+  const billing = repos.billing;
+  const secrets = new SecretBox(config.SECRETS_ENCRYPTION_KEY);
 
-  const registry = loadClientRegistry(config);
+  // Реестр сайтов живёт в БД: clients.json и PROXY_INBOUND_TOKEN импортируются один раз,
+  // дальше им управляют админка и CLI (см. clients/site-bootstrap.ts).
+  bootstrapSiteRegistry({
+    db: db.db,
+    config,
+    siteClients: repos.siteClients,
+    siteTokens: repos.siteTokens,
+    settings: repos.settings,
+    secrets,
+    logger,
+  });
+  const registry = new SiteRegistry({
+    config,
+    siteClients: repos.siteClients,
+    siteTokens: repos.siteTokens,
+    secrets,
+    logger,
+  });
   const active = new ActiveRequests(config.MAX_ACTIVE_DEDUP_KEYS);
   const fairness = new FairnessManager(
     registry,
@@ -49,6 +71,7 @@ export async function buildApp(config: Config): Promise<AppBundle> {
     () => active.size(),
     config.MAX_ACTIVE_DEDUP_KEYS,
   );
+  registry.onReload((clients) => fairness.syncClients(clients));
   const activeMetrics = new ActiveMetrics();
 
   const client = new OpenRouterClient(config, logger);
@@ -122,6 +145,8 @@ export async function buildApp(config: Config): Promise<AppBundle> {
     app,
     db,
     registry,
+    repos,
+    secrets,
     fairness,
     active,
     activeMetrics,

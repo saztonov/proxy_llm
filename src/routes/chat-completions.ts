@@ -21,7 +21,8 @@ import type { RequestsRepo, RequestRecord } from '../storage/requests-repo.js';
 import type { AlertEngine } from '../alerts/rules.js';
 import type { ActiveSource, ActiveRequestSnapshot } from '../watchdog/ticker.js';
 import { makeBearerAuthHook } from '../auth/bearer.js';
-import type { ClientRegistry, ClientConfig } from '../clients/registry.js';
+import type { ClientConfig } from '../clients/registry.js';
+import type { TokenResolver } from '../clients/site-registry.js';
 import type { FairnessManager } from '../concurrency/fairness.js';
 
 declare module 'fastify' {
@@ -41,7 +42,7 @@ declare module 'fastify' {
 export interface ChatRoutesDeps {
   config: Config;
   logger: Logger;
-  registry: ClientRegistry;
+  registry: TokenResolver;
   fairness: FairnessManager;
   active: ActiveRequests;
   client: OpenRouterClient;
@@ -395,6 +396,8 @@ function makeAttemptSink(
       est_quality: est.quality,
       est_price_version: priceVersion?.id ?? null,
       usage_json: obs.usage?.raw ?? null,
+      contour: 'site',
+      token_id: ctx.client.tokenId ?? null,
     };
     deps.billing.insertAttempt(record);
   };
@@ -437,6 +440,8 @@ function persistRecord(
     billing_execution_id: billing.executionId,
     dedup_join: billing.joined ? 1 : 0,
     model_requested: billing.modelRequested,
+    contour: 'site',
+    token_id: ctx.client.tokenId ?? null,
   };
 
   try {

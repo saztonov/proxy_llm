@@ -65,6 +65,16 @@ function installShutdownHandlers(drainMs: number, bundle: AppBundle): void {
     process.exit(0);
   };
 
+  // Ручная правка реестра в БД (sqlite3, CLI): `systemctl kill -s HUP proxy_llm` применяет её
+  // без рестарта. Ошибка сборки снапшота оставляет прежний в силе.
+  process.on('SIGHUP', () => {
+    try {
+      const diff = bundle.registry.reload();
+      logger.info({ ...diff }, 'SIGHUP: site registry reloaded');
+    } catch (err) {
+      logger.error({ err: sanitizeErrorForLog(err) }, 'SIGHUP reload failed; previous snapshot kept');
+    }
+  });
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('uncaughtException', (err) => {
