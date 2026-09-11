@@ -693,8 +693,9 @@
       if (!login) issues.push({ path: 'login', message: 'Введите логин' });
       if (!password) issues.push({ path: 'password', message: 'Введите пароль' });
       throwIfIssues(issues);
+      let d;
       try {
-        await api('POST', '/auth/login', { login, password });
+        d = await api('POST', '/auth/login', { login, password });
       } catch (err) {
         if (err.status === 401) {
           err.display = 'Неверный логин или пароль';
@@ -708,7 +709,8 @@
         }
         throw err;
       }
-      location.replace(next);
+      // Встроенная учётка с паролем по умолчанию: сразу к смене пароля.
+      location.replace(d && d.defaultPassword ? '/admin/settings#password' : next);
     });
   }
 
@@ -2128,6 +2130,12 @@
     if (who && me && me.admin) {
       who.textContent = me.admin.login || '';
       if (me.admin.displayName) who.title = me.admin.displayName;
+    }
+    const main = document.querySelector('main');
+    if (me && me.defaultPassword && main) {
+      main.prepend(h('div', { class: 'form-error', role: 'alert' },
+        'Используется пароль по умолчанию, он известен всем. Смените его: ',
+        h('a', { href: '/admin/settings#password' }, 'Настройки → Смена пароля'), '.'));
     }
     const logout = $('btn-logout');
     if (logout) {

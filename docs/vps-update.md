@@ -53,10 +53,13 @@ node -v && npm -v                                      # обязана быть
    ```
    Все прежние клиенты на месте, политика совпадает с `clients.json`, у `passdesk` есть токен.
 6. Дождаться боевого запроса PassDesk: в `requests` у него `contour='site'` и заполнен `token_id`.
-7. Первый администратор (пароль печатается один раз):
+7. Первый администратор. При первом старте на базе без админов сервис сам создаёт встроенного **`admin@test.com` / `qwertyui12345`** (в логе предупреждение `built-in admin created`). Пара опубликована в репозитории, поэтому **сразу после первого входа смените пароль**: интерфейс сам откроет «Настройки» → «Смена пароля» и держит баннер, пока пароль по умолчанию не сменён; до этого сервис на каждом старте пишет предупреждение в лог. После смены все сессии завершаются — войдите новым паролем. Пока пароль не сменён, от чужого входа защищает только allowlist `location /admin` (шаг 8).
+
+   Запасной путь — свой админ через CLI (пароль печатается один раз). Если он создан до первого старта, встроенный не появится; если после — встроенного можно выключить:
    ```bash
    cd /opt/proxy_llm
    sudo -u proxy_llm bash -c 'set -a; . /etc/proxy_llm/.env; set +a; /opt/node-v22/bin/node dist/cli/admin.js create --login admin --generate'
+   sudo -u proxy_llm bash -c 'set -a; . /etc/proxy_llm/.env; set +a; /opt/node-v22/bin/node dist/cli/admin.js disable --login admin@test.com'
    ```
 8. nginx: добавить `location /admin` (allowlist IP админа) и `location /agent/` из `deploy/nginx/proxy_llm.conf`, а также `map` и `limit_req_zone` зоны `proxy_llm_agent_noauth` (уровень `http`, вне `server`), затем `nginx -t && systemctl reload nginx`. Проверить `worker_connections` (десятки стримов = вдвое больше соединений nginx).
 9. Войти в `/admin`: «Сайты» — клиенты с прежней политикой; «Провайдеры» — завести OpenRouter; «Настройки» — модель по умолчанию; «Справочник» и «Агентские ключи» — первый ключ; проверить его по `docs/agents.md`.

@@ -5,6 +5,7 @@ import { setAuthCookies, clearAuthCookies, AT_COOKIE, RT_COOKIE } from '../auth/
 import type { ClientMeta } from '../auth/session-service.js';
 import { parseOr400, sendError } from '../validation.js';
 import { WindowRateLimiter } from '../../agent/limiters.js';
+import { usesDefaultPassword } from '../default-admin.js';
 
 const loginBody = z.object({ login: z.string().trim().min(1).max(64), password: z.string().min(1).max(1024) }).strict();
 const changeBody = z.object({ current: z.string().min(1).max(1024), next: z.string().min(1).max(1024) }).strict();
@@ -21,6 +22,11 @@ export async function registerAuthRoutes(app: FastifyInstance, ctx: AdminCtx): P
   // Per-IP поверх per-login: перебор паролей к разным логинам с одного адреса.
   const loginByIp = new WindowRateLimiter(cfg.ADMIN_LOGIN_IP_MAX, windowMs);
   const refreshByIp = new WindowRateLimiter(Math.max(60, cfg.ADMIN_LOGIN_IP_MAX * 6), windowMs);
+  // Интерфейс по этому флагу ведёт на смену пароля и показывает баннер (см. admin/default-admin.ts).
+  const defaultPasswordOf = (adminId: number): boolean => {
+    const row = ctx.repos.adminUsers.get(adminId);
+    return row !== null && usesDefaultPassword(row);
+  };
 
   const limited = (limiter: WindowRateLimiter, req: FastifyRequest, reply: Parameters<typeof sendError>[0]): boolean => {
     const rl = limiter.hit(req.ip);
@@ -60,7 +66,7 @@ export async function registerAuthRoutes(app: FastifyInstance, ctx: AdminCtx): P
     }
     setAuthCookies(reply, out.session, secure);
     ctx.audit.record({ adminId: out.session.admin.id, ip: req.ip }, 'auth.login', 'admin', out.session.admin.id);
-    reply.send({ admin: out.session.admin, csrf: out.session.csrf });
+    reply.send({ admin: out.session.admin, csrf: out.session.csrf, defaultPassword: defaultPasswordOf(out.session.admin.id) });
   });
 
   app.post('/api/auth/refresh', async (req, reply) => {
@@ -99,7 +105,7 @@ export async function registerAuthRoutes(app: FastifyInstance, ctx: AdminCtx): P
     s.get('/api/auth/me', async (req, reply) => {
       const admin = ctx.sessions.admin(req.adminSession!.adminId);
       if (!admin) return sendError(reply, 401, 'unauthorized', 'login required');
-      reply.send({ admin, csrf: ctx.sessions.csrfFor(req.adminSession!.sid) });
+      reply.send({ admin, csrf: ctx.sessions.csrfFor(req.adminSession!.sid), defaultPassword: defaultPasswordOf(admin.id) });
     });
 
     s.post('/api/auth/change-password', async (req, reply) => {

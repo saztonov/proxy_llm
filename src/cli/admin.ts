@@ -33,7 +33,8 @@ export class CliError extends Error {
   override readonly name = 'CliError';
 }
 
-const ADMIN_LOGIN = /^[a-z0-9][a-z0-9._-]{2,31}$/;
+/** Как у поля входа (до 64 символов); @ — чтобы логином мог быть e-mail. */
+const ADMIN_LOGIN = /^[a-z0-9][a-z0-9._@-]{2,63}$/;
 export const SLUG = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 export const EMPLOYEE_LOGIN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const USAGE_MODES: readonly UsageMode[] = ['auto', 'openrouter', 'stream_options', 'none'];
@@ -45,7 +46,7 @@ function need(v: string | undefined, name: string): string {
 
 export async function createAdmin(repos: Repos, input: { login: string; password: string; displayName?: string }, now = Date.now()): Promise<number> {
   const login = input.login.trim().toLowerCase();
-  if (!ADMIN_LOGIN.test(login)) throw new CliError('login: 3-32 chars of a-z 0-9 . _ -');
+  if (!ADMIN_LOGIN.test(login)) throw new CliError('login: 3-64 chars of a-z 0-9 . _ @ -');
   const err = validateNewPassword(input.password);
   if (err) throw new CliError(err);
   const hash = await hashPassword(input.password);
@@ -60,6 +61,20 @@ export async function resetPassword(repos: Repos, input: { login: string; passwo
   if (err) throw new CliError(err);
   repos.adminUsers.setPassword(user.id, await hashPassword(input.password), now);
   return repos.adminSessions.revokeAllForAdmin(user.id, now, 'password_reset').length;
+}
+
+/**
+ * Выключает админа и завершает его сессии — например, встроенного admin@test.com после того,
+ * как заведён свой логин. Последнего включённого админа выключить нельзя: войти будет некому.
+ */
+export function disableAdmin(repos: Repos, login: string, now = Date.now()): number {
+  const user = repos.adminUsers.getByLogin(login.trim());
+  if (!user) throw new CliError(`admin "${login}" not found`);
+  if (user.enabled === 1 && repos.adminUsers.list().filter((u) => u.enabled === 1).length <= 1) {
+    throw new CliError('this is the last enabled admin: create another one first');
+  }
+  repos.adminUsers.setEnabled(user.id, false, now);
+  return repos.adminSessions.revokeAllForAdmin(user.id, now, 'cli_disable').length;
 }
 
 export function revokeSessions(repos: Repos, login: string | undefined, now = Date.now()): number {
@@ -204,6 +219,7 @@ const USAGE = `Usage: node dist/cli/admin.js <command> [options]   (env: DB_PATH
   create --login <l> (--password-stdin | --generate) [--name <n>]
   reset-password --login <l> (--password-stdin | --generate)
   revoke-sessions [--login <l>]
+  disable --login <l>           (e.g. the built-in admin@test.com once you have your own admin)
   provider add --name <n> --base-url <url> (--key-stdin | --no-key) [--usage-mode auto|openrouter|stream_options|none]
                [--max-concurrency <n>] [--allow-insecure]
   provider list
@@ -282,6 +298,9 @@ export async function main(argv: string[], out: (s: string) => void = console.lo
         return 0;
       case 'revoke-sessions':
         out(`sessions revoked: ${revokeSessions(repos, o.login)}`);
+        return 0;
+      case 'disable':
+        out(`admin disabled, sessions revoked: ${disableAdmin(repos, need(o.login, 'login'))}`);
         return 0;
       case 'provider add': {
         if (!o['key-stdin'] && !o['no-key']) throw new CliError('use --key-stdin (or --no-key for a keyless local provider)');

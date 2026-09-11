@@ -97,6 +97,6 @@ describe('admin sessions: refresh rotation and revocation', () => {
   it('/me returns the admin and a CSRF token bound to the session', async () => {
     const s = await loginAs(b);
     const me = await adminCall(b, s, 'GET', '/admin/api/auth/me');
-    expect(me.json()).toEqual({ admin: { id: s.adminId, login: 'root', displayName: '' }, csrf: s.csrf });
+    expect(me.json()).toEqual({ admin: { id: s.adminId, login: 'root', displayName: '' }, csrf: s.csrf, defaultPassword: false });
   });
 });

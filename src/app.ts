@@ -28,6 +28,7 @@ import { adminPlugin } from './admin/plugin.js';
 import { combineActiveSources } from './watchdog/composite-source.js';
 import { ProxyAbort } from './concurrency/active-metrics.js';
 import { startRegistryWatcher } from './clients/registry-watcher.js';
+import { ensureDefaultAdmin } from './admin/default-admin.js';
 
 /** Как часто сервис проверяет, не правил ли CLI реестры в БД. */
 const REGISTRY_WATCH_INTERVAL_MS = 5_000;
@@ -63,6 +64,8 @@ export async function buildApp(config: Config): Promise<AppBundle> {
   const repo = repos.requests;
   const billing = repos.billing;
   const secrets = new SecretBox(config.SECRETS_ENCRYPTION_KEY);
+  // Первый вход в /admin без CLI: встроенный админ появляется только на пустой таблице.
+  ensureDefaultAdmin(repos.adminUsers, logger);
 
   // Реестр сайтов живёт в БД: clients.json и PROXY_INBOUND_TOKEN импортируются один раз,
   // дальше им управляют админка и CLI (см. clients/site-bootstrap.ts).

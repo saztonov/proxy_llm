@@ -47,7 +47,7 @@
   </div>
 </section>
 
-<section class="section">
+<section class="section" id="password">
   <h2>Смена пароля</h2>
   <p class="muted">После смены пароля все сессии будут завершены, потребуется войти заново.</p>
   <form id="form-password" class="panel panel-narrow" novalidate>
