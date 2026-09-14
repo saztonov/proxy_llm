@@ -1661,9 +1661,19 @@
       return out;
     }
 
+    // С тарифом по времени суток верхние поля — пиковые цены: подписи говорят это прямо.
+    const PRICE_LABELS = {
+      'price-input': ['Вход, $ за 1 млн', 'Пик: вход, $ за 1 млн'],
+      'price-cacheRead': ['Вход из кэша, $ за 1 млн', 'Пик: вход из кэша, $ за 1 млн'],
+      'price-output': ['Выход, $ за 1 млн', 'Пик: выход, $ за 1 млн'],
+    };
     function syncOffPeak() {
       const on = fchecked(priceForm, 'hasOffPeak');
       priceForm.querySelectorAll('.offpeak-only').forEach((el) => el.classList.toggle('hidden', !on));
+      for (const [id, texts] of Object.entries(PRICE_LABELS)) {
+        const label = priceForm.querySelector(`label[for="${id}"]`);
+        if (label) label.textContent = texts[on ? 1 : 0];
+      }
     }
     fe(priceForm, 'hasOffPeak').addEventListener('change', syncOffPeak);
 
@@ -1693,11 +1703,12 @@
       const list = ((await api('GET', `/providers/${enc(priceProvider.id)}/prices`)) || {}).prices || [];
       setRows(priceTbody, list.map((v) => {
         const pr = v.price;
+        const peakTag = pr.offPeak ? ' (пик)' : '';
         return h('tr', null,
           td(mono(v.model)),
-          td(usdM(pr.input), 'num'),
-          td(usdM(pr.cacheRead), 'num'),
-          td(usdM(pr.output), 'num'),
+          td(usdM(pr.input) + peakTag, 'num'),
+          td(usdM(pr.cacheRead) + peakTag, 'num'),
+          td(usdM(pr.output) + peakTag, 'num'),
           td(pr.offPeak ? mono(`${usdM(pr.offPeak.input)} / ${usdM(pr.offPeak.cacheRead)} / ${usdM(pr.offPeak.output)}`) : muted('—')),
           td(pr.offPeak ? mono(hoursText(pr.peakHoursUtc) + (pr.peakWeekdaysOnly ? ', пн–пт' : '')) : muted('—')),
           td(v.effectiveFrom ? fmtDate(v.effectiveFrom) : muted('всегда')),

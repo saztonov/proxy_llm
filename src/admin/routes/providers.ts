@@ -12,6 +12,7 @@ import { validateExtraHeader, sanitizeExtraHeaders } from '../../upstream/provid
 import { modelSlug } from '../validation.js';
 import { providerPriceSchema } from '../../billing/provider-pricing.js';
 import { repriceProviderModel } from '../../billing/provider-reprice.js';
+import { seedKnownProviderPrices } from '../../billing/seed-provider-prices.js';
 
 const USAGE = z.enum(['auto', 'openrouter', 'stream_options', 'none']);
 const fields = {
@@ -97,6 +98,8 @@ export async function registerProviderRoutes(app: FastifyInstance, ctx: AdminCtx
       ctx.audit.record(actorOf(req), 'provider.create', 'provider', newId, { name: b.name, baseUrl, usageMode: b.usageMode ?? 'auto', apiKeyChanged: Boolean(b.apiKey) });
       return newId;
     });
+    // Провайдер с известным прайсом (DeepSeek) сразу получает цены моделей.
+    seedKnownProviderPrices({ db: ctx.db, repos: ctx.repos, logger: ctx.logger }, id);
     reply.code(201).send({ provider: providerView(ctx, repo.get(id)!, defaultId()) });
   });
 

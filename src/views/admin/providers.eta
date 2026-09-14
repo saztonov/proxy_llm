@@ -26,11 +26,11 @@
   <form id="form-price" novalidate>
     <h2 id="dlg-prices-title">Цены моделей</h2>
     <div class="form-error hidden" role="alert"></div>
-    <p class="muted">Провайдер не сообщает стоимость в ответе — прокси считает её по токенам и этим ценам (колонка «≈ Оценка $» в статистике). Цены — USD за 1 млн токенов. Модель — как в поле «Модель» у настроек или ключа.</p>
+    <p class="muted">Провайдер не сообщает стоимость в ответе — прокси считает её по токенам и этим ценам (колонка «≈ Оценка $» в статистике). Цены — USD за 1 млн токенов. Модель — как в поле «Модель» у настроек или ключа. Для провайдера с адресом api.deepseek.com прайс DeepSeek заполняется автоматически.</p>
     <div class="table-wrap">
       <table class="grid">
         <thead>
-          <tr><th>Модель</th><th class="num">Вход</th><th class="num">Из кэша</th><th class="num">Выход</th><th>Вне пика</th><th>Пик (UTC)</th><th>Действует с</th><th></th></tr>
+          <tr><th>Модель</th><th class="num">Вход</th><th class="num">Из кэша</th><th class="num">Выход</th><th>Вне пика: вход / кэш / выход</th><th>Пиковые часы, UTC</th><th>Действует с</th><th></th></tr>
         </thead>
         <tbody id="prices-tbody"><tr><td colspan="8" class="muted">Загрузка…</td></tr></tbody>
       </table>
@@ -38,7 +38,7 @@
     <div class="form-grid">
       <div class="form-row form-row-wide">
         <label for="price-model">Модель</label>
-        <input id="price-model" name="model" type="text" class="mono" maxlength="200" autocomplete="off" spellcheck="false" placeholder="deepseek-flash">
+        <input id="price-model" name="model" type="text" class="mono" maxlength="200" autocomplete="off" spellcheck="false" placeholder="например, deepseek-flash">
       </div>
       <div class="form-row">
         <label for="price-input">Вход, $ за 1 млн</label>
@@ -54,7 +54,8 @@
         <input id="price-output" name="price.output" type="text" inputmode="decimal" class="mono" autocomplete="off">
       </div>
       <div class="form-row form-row-wide form-row-check">
-        <label class="check"><input type="checkbox" name="hasOffPeak"> Отдельный тариф вне пиковых часов (цены выше — пиковые)</label>
+        <label class="check"><input type="checkbox" name="hasOffPeak"> Цена зависит от времени суток (пик и вне пика)</label>
+        <small class="hint" id="price-offpeak-hint">Включите, если провайдер берёт разную цену в разное время. Например, у DeepSeek пик — 01–04 и 06–10 UTC по будням, в остальное время всё вдвое дешевле. Каждый запрос считается по тарифу, действовавшему в момент его начала.</small>
       </div>
       <div class="form-row offpeak-only hidden">
         <label for="price-op-input">Вне пика: вход</label>
