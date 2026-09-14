@@ -2,6 +2,7 @@
 <div class="page-head">
   <h1>Справочник</h1>
   <div class="page-actions">
+    <button id="btn-dir-import" type="button" class="btn">Импорт из Excel</button>
     <button id="btn-dir-reload" type="button" class="btn">Обновить</button>
   </div>
 </div>
@@ -83,6 +84,24 @@
     <div class="dialog-actions">
       <button type="button" class="btn" data-close>Отмена</button>
       <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-import" class="dlg-wide" aria-labelledby="dlg-import-title">
+  <form id="form-import" novalidate>
+    <h2 id="dlg-import-title">Импорт сотрудников из Excel</h2>
+    <div class="form-error hidden" role="alert"></div>
+    <div class="form-row">
+      <label for="import-file">Файл .xlsx</label>
+      <input id="import-file" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      <small class="hint">Читается первый лист. Нужны столбцы «ФИО» и «Отдел», остальные не учитываются. Размер до 1 МБ.
+        Отделы, которых нет, будут созданы; сотрудник с уже существующим ФИО пропускается.</small>
+    </div>
+    <div id="import-result" class="import-summary hidden" aria-live="polite"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Закрыть</button>
+      <button type="submit" class="btn btn-primary">Загрузить</button>
     </div>
   </form>
 </dialog>

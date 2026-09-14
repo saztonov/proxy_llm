@@ -64,7 +64,7 @@ describe('agent contour: capacity and isolation', () => {
     const first = seedAgent(b, { baseUrl, maxConcurrency: 1, maxPending: 1 });
     const t = generateToken('agent');
     b.repos.agentTokens.issue({
-      token_sha256: t.sha256, token_prefix: t.prefix, label: 'second', principal_type: 'employee',
+      token_sha256: t.sha256, token_prefix: t.prefix, label: 'second', comment: '', principal_type: 'employee',
       department_id: null, employee_id: first.employeeId, provider_id: null, model: null, allowed_cidrs_json: null, expires_at: null,
     }, Date.now());
     b.agentRegistry.reload();

@@ -79,6 +79,11 @@
         <small class="hint">Пусто — бессрочно. Время локальное.</small>
       </div>
       <div class="form-row form-row-wide">
+        <label for="at-comment">Комментарий</label>
+        <textarea id="at-comment" name="comment" rows="3" maxlength="500" placeholder="для чего ключ, кто просил, где используется"></textarea>
+        <small class="hint">До 500 символов. В таблице показывается при наведении на пиктограмму.</small>
+      </div>
+      <div class="form-row form-row-wide">
         <label for="at-allowedCidrs">Разрешённые сети (CIDR, по одной в строке)</label>
         <textarea id="at-allowedCidrs" name="allowedCidrs" rows="3" class="mono" spellcheck="false" placeholder="10.0.0.0/8"></textarea>
         <small class="hint">Пусто — без ограничения по адресу.</small>

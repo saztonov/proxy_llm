@@ -419,6 +419,49 @@ dialog h2 { margin-bottom: 14px; }
 }
 .toast-error { background: var(--danger); }
 
+/* ---------- Подсказки ---------- */
+
+.tip-icon {
+  cursor: help;
+  font-size: 13px;
+  opacity: 0.75;
+  border-radius: 4px;
+}
+.tip-icon:hover, .tip-icon:focus-visible { opacity: 1; }
+.tip-icon:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.tip {
+  position: fixed;
+  z-index: 90;
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #fff;
+  background: #24303f;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+/* ---------- Импорт справочника ---------- */
+
+.import-summary { margin-top: 4px; }
+.import-summary .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.import-summary details { margin: 6px 0; }
+.import-summary summary { cursor: pointer; color: var(--primary); }
+.import-list { margin: 4px 0 0; padding-left: 20px; max-height: 240px; overflow: auto; }
+.import-list li { margin: 1px 0; }
+.import-warn {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px solid #efd28f;
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  margin-bottom: 8px;
+}
+
 /* ---------- Адаптивность ---------- */
 
 @media (max-width: 900px) {

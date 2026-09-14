@@ -166,6 +166,7 @@ export function issueAgentToken(repos: Repos, input: IssueInput, now = Date.now(
     token_sha256: t.sha256,
     token_prefix: t.prefix,
     label: input.label ?? '',
+    comment: '',
     principal_type: employeeId !== null ? 'employee' : 'department',
     department_id: departmentId,
     employee_id: employeeId,

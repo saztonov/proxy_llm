@@ -21,7 +21,7 @@
 
   const PLAIN_ATTRS = new Set([
     'id', 'type', 'title', 'name', 'placeholder', 'role', 'colspan', 'rowspan', 'for',
-    'min', 'max', 'step', 'autocomplete', 'scope', 'spellcheck',
+    'min', 'max', 'step', 'autocomplete', 'scope', 'spellcheck', 'tabindex',
   ]);
 
   function safeHref(v) {
@@ -211,6 +211,52 @@
   }
 
   // ================================================================
+  // Подсказки [data-tip]
+  // ================================================================
+
+  // Один общий элемент в body с position: fixed: псевдоэлемент внутри .table-wrap
+  // (overflow: auto) обрезался бы краем таблицы.
+  let tipEl = null;
+
+  function showTip(target) {
+    const text = target.getAttribute('data-tip');
+    if (!text) return;
+    if (!tipEl) {
+      tipEl = h('div', { class: 'tip hidden', role: 'tooltip' });
+      document.body.appendChild(tipEl);
+    }
+    tipEl.textContent = text;
+    tipEl.classList.remove('hidden');
+    const r = target.getBoundingClientRect();
+    const left = Math.min(Math.max(8, r.left + r.width / 2 - tipEl.offsetWidth / 2), window.innerWidth - tipEl.offsetWidth - 8);
+    let top = r.bottom + 6;
+    if (top + tipEl.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - tipEl.offsetHeight - 6);
+    tipEl.style.left = Math.max(8, left) + 'px';
+    tipEl.style.top = top + 'px';
+  }
+
+  function hideTip() {
+    if (tipEl) tipEl.classList.add('hidden');
+  }
+
+  function initTips() {
+    const tipTarget = (ev) => (ev.target && ev.target.closest ? ev.target.closest('[data-tip]') : null);
+    document.addEventListener('mouseover', (ev) => { const t = tipTarget(ev); if (t) showTip(t); });
+    document.addEventListener('mouseout', (ev) => {
+      const t = tipTarget(ev);
+      if (t && !(ev.relatedTarget && t.contains(ev.relatedTarget))) hideTip();
+    });
+    document.addEventListener('focusin', (ev) => { const t = tipTarget(ev); if (t) showTip(t); });
+    document.addEventListener('focusout', (ev) => { if (tipTarget(ev)) hideTip(); });
+    document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') hideTip(); });
+    window.addEventListener('scroll', hideTip, true);
+  }
+
+  function commentIcon(text) {
+    return h('span', { class: 'tip-icon', tabindex: 0, role: 'img', 'aria-label': 'Комментарий: ' + text, 'data-tip': text }, '💬');
+  }
+
+  // ================================================================
   // API
   // ================================================================
 
@@ -230,7 +276,10 @@
 
   async function rawFetch(method, url, body, withCsrf) {
     const headers = { accept: 'application/json' };
-    if (body !== undefined) headers['content-type'] = 'application/json';
+    // Blob (загружаемый файл) уходит как есть, всё остальное — JSON.
+    const isBlob = typeof Blob !== 'undefined' && body instanceof Blob;
+    if (isBlob) headers['content-type'] = body.type || 'application/octet-stream';
+    else if (body !== undefined) headers['content-type'] = 'application/json';
     if (method !== 'GET' && withCsrf) headers['x-csrf-token'] = csrf || '';
     try {
       return await fetch(url, {
@@ -238,7 +287,7 @@
         credentials: 'same-origin',
         cache: 'no-store',
         headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: body === undefined ? undefined : isBlob ? body : JSON.stringify(body),
       });
     } catch (_) {
       throw networkError();
@@ -1291,6 +1340,69 @@
       await Promise.all([loadDepts(), loadEmps()]);
     });
 
+    // ---- импорт из Excel (файл разбирается только на сервере)
+
+    const impForm = $('form-import');
+    const impDlg = $('dlg-import');
+    const impResult = $('import-result');
+    const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const IMPORT_MAX_BYTES = 1024 * 1024;
+
+    function openImport() {
+      impForm.reset();
+      clearFormErrors(impForm);
+      impResult.replaceChildren();
+      impResult.classList.add('hidden');
+      openDialog(impDlg);
+      fe(impForm, 'file').focus();
+    }
+
+    function importList(title, items, fmt) {
+      if (!Array.isArray(items) || !items.length) return null;
+      return h('details', null,
+        h('summary', null, `${title}: ${fmtInt(items.length)}`),
+        h('ul', { class: 'import-list' }, items.map((x) => h('li', null, fmt(x)))));
+    }
+
+    function renderImport(s) {
+      const created = s.employeesCreated || [];
+      const newDepts = s.departmentsCreated || [];
+      const existing = s.skippedExisting || [];
+      const dups = s.skippedDuplicate || [];
+      const invalid = s.invalid || [];
+      impResult.replaceChildren(
+        h('div', { class: 'cards' },
+          card('Строк с данными', fmtInt(s.rowsTotal || 0)),
+          card('Добавлено сотрудников', fmtInt(created.length)),
+          card('Создано отделов', fmtInt(newDepts.length)),
+          card('Пропущено', fmtInt(existing.length + dups.length), ['ФИО уже есть или повтор в файле']),
+          card('Ошибок в строках', fmtInt(invalid.length), null, invalid.length ? 'card-warn' : null)),
+        (s.warnings || []).map((w) => h('div', { class: 'import-warn', role: 'status' }, w)),
+        importList('Созданные отделы', newDepts, (d) => [d.name, ' ', mono(d.slug)]),
+        importList('Добавленные сотрудники', created, (e) => [`строка ${e.row}: ${e.fio} — ${e.department} `, mono(e.login)]),
+        importList('Пропущены: ФИО уже есть', existing, (e) => `строка ${e.row}: ${e.fio} (отдел «${e.department}»)`),
+        importList('Пропущены: повтор в файле', dups, (e) => `строка ${e.row}: ${e.fio}`),
+        importList('Ошибки в строках', invalid, (e) => `строка ${e.row}: ${e.reason}`));
+      impResult.classList.remove('hidden');
+    }
+
+    onSubmit(impForm, async () => {
+      const input = fe(impForm, 'file');
+      const file = input.files && input.files[0];
+      const issues = [];
+      if (!file) issues.push({ path: 'file', message: 'Выберите файл' });
+      else if (!/\.xlsx$/i.test(file.name)) issues.push({ path: 'file', message: 'Нужен файл .xlsx (старый .xls сохраните как .xlsx)' });
+      else if (file.size > IMPORT_MAX_BYTES) issues.push({ path: 'file', message: 'Файл больше 1 МБ' });
+      throwIfIssues(issues);
+      impResult.replaceChildren();
+      impResult.classList.add('hidden');
+      const r = await api('POST', '/directory/import', new Blob([file], { type: XLSX_MIME }));
+      input.value = '';
+      renderImport((r && r.summary) || {});
+      await Promise.all([loadDepts(), loadEmps()]);
+    });
+
+    $('btn-dir-import').addEventListener('click', openImport);
     filter.addEventListener('change', () => { loadEmps(); });
     $('btn-dept-add').addEventListener('click', () => openDept(null));
     $('btn-emp-add').addEventListener('click', () => {
@@ -1615,7 +1727,7 @@
         const live = !t.revokedAt;
         return h('tr', { class: live && t.enabled ? null : 'row-off' },
           td(mono((t.prefix || '') + '…')),
-          td(t.label || '—'),
+          td([t.label || '—', t.comment ? [' ', commentIcon(t.comment)] : null]),
           td(ownerCell(t)),
           td(modelCell(t)),
           td(t.expiresAt ? fmtDate(t.expiresAt) : muted('бессрочно'), 'nowrap'),
@@ -1684,6 +1796,7 @@
       if (t) {
         $('at-owner').textContent = agentOwnerText(t);
         fset(form, 'label', t.label);
+        fset(form, 'comment', t.comment);
         fillProviderSelect(t.providerId);
         fset(form, 'model', t.model);
         fset(form, 'expiresAt', t.expiresAt ? toLocalInput(t.expiresAt) : '');
@@ -1728,16 +1841,20 @@
       const bad = cidrs.find((c) => !/^[0-9a-fA-F:.]+(\/\d{1,3})?$/.test(c));
       if (bad) issues.push({ path: 'allowedCidrs', message: `Не похоже на IP/CIDR: ${bad}` });
       const label = fval(form, 'label');
+      const comment = fval(form, 'comment');
+      if (comment.length > 500) issues.push({ path: 'comment', message: 'Не длиннее 500 символов' });
 
       if (editing) {
         const orig = {
           label: editing.label || null,
+          comment: editing.comment || null,
           expiresAt: editing.expiresAt || null,
           allowedCidrs: Array.isArray(editing.allowedCidrs) && editing.allowedCidrs.length ? editing.allowedCidrs : null,
           enabled: editing.enabled,
         };
         const next = {
           label: label || null,
+          comment: comment || null,
           expiresAt,
           allowedCidrs: cidrs.length ? cidrs : null,
           enabled: fchecked(form, 'enabled'),
@@ -1768,6 +1885,7 @@
           body.departmentId = idVal(departmentId);
         }
         if (label) body.label = label;
+        if (comment) body.comment = comment;
         if (providerId && model) { body.providerId = idVal(providerId); body.model = model; }
         if (expiresAt !== null) body.expiresAt = expiresAt;
         if (cidrs.length) body.allowedCidrs = cidrs;
@@ -2113,6 +2231,7 @@
 
   async function start() {
     initDialogs();
+    initTips();
     const page = document.body.dataset.page || '';
     if (page === 'login') {
       try { await pageLogin(); } catch (err) { showFatal(err); }

@@ -5,6 +5,14 @@ import { parseOr400, sendError, idParam, optionalLimit } from '../validation.js'
 import { actorOf } from '../audit.js';
 import { SLUG, EMPLOYEE_LOGIN } from '../../cli/admin.js';
 import type { DepartmentListRow, EmployeeListRow, DepartmentPatch, EmployeePatch } from '../../storage/directory-repo.js';
+import { ImportParseError, parseXlsxInChild } from '../import/parse-xlsx.js';
+import { ImportFormatError, importDirectory } from '../import/directory-import.js';
+
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+/** Равен client_max_body_size у location /admin в nginx. */
+export const IMPORT_BODY_LIMIT = 1024 * 1024;
+const ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+const OLE2_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
 
 const deptCreate = z.object({
   slug: z.string().trim().toLowerCase().regex(SLUG, 'slug: 1-32 chars of a-z 0-9 _ -'),
@@ -134,5 +142,43 @@ export async function registerDirectoryRoutes(app: FastifyInstance, ctx: AdminCt
       ctx.audit.record(actorOf(req), 'employee.update', 'employee', p.id, { fields: Object.keys(b), ...(b.enabled !== undefined ? { enabled: b.enabled } : {}) });
     });
     reply.send({ employee: empView(empById(p.id)!) });
+  });
+
+  // Импорт из xlsx: тело — сам файл. Парсер двоичного тела зарегистрирован только в этом
+  // вложенном контексте, остальные маршруты API по-прежнему принимают только JSON.
+  let importing = false;
+  await app.register(async (sub) => {
+    sub.addContentTypeParser([XLSX_MIME, 'application/octet-stream'], { parseAs: 'buffer', bodyLimit: IMPORT_BODY_LIMIT },
+      (_req, body, done) => done(null, body));
+
+    sub.post('/directory/import', { bodyLimit: IMPORT_BODY_LIMIT }, async (req, reply) => {
+      const file = req.body;
+      if (!Buffer.isBuffer(file) || file.length === 0) return sendError(reply, 400, 'invalid_file', 'Приложите файл .xlsx');
+      if (file.subarray(0, 8).equals(OLE2_SIGNATURE)) {
+        return sendError(reply, 400, 'invalid_file', 'Старый формат .xls не поддерживается — сохраните файл как .xlsx');
+      }
+      if (!file.subarray(0, 4).equals(ZIP_SIGNATURE)) return sendError(reply, 400, 'invalid_file', 'Нужен файл .xlsx');
+      if (importing) return sendError(reply, 503, 'busy', 'import is already running');
+      importing = true;
+      try {
+        const sheet = await parseXlsxInChild(file);
+        const summary = ctx.change(() => {
+          const s = importDirectory(dir, sheet.rows, sheet.truncated, Date.now());
+          ctx.audit.record(actorOf(req), 'directory.import', 'directory', null, {
+            rows: s.rowsTotal, departmentsCreated: s.departmentsCreated.length, employeesCreated: s.employeesCreated.length,
+            skipped: s.skippedExisting.length + s.skippedDuplicate.length, invalid: s.invalid.length,
+          });
+          return s;
+        });
+        return reply.send({ summary });
+      } catch (err) {
+        if (err instanceof ImportParseError || err instanceof ImportFormatError) {
+          return sendError(reply, 400, 'invalid_file', err.message);
+        }
+        throw err;
+      } finally {
+        importing = false;
+      }
+    });
   });
 }

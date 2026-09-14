@@ -59,6 +59,7 @@ export function seedAgent(bundle: AppBundle, o: SeedOptions): Seeded {
     token_sha256: t.sha256,
     token_prefix: t.prefix,
     label: 'test',
+    comment: '',
     principal_type: asEmployee ? 'employee' : 'department',
     department_id: asEmployee ? null : departmentId,
     employee_id: employeeId,

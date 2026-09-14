@@ -83,7 +83,7 @@ describe('registry repositories', () => {
     const it1 = d.createDepartment({ slug: 'it', name: 'IT', max_concurrency: 10, max_pending: null }, 1);
     const emp = d.createEmployee({ login: 'ivan', display_name: 'Иван', email: null, department_id: it1, ...NO_LIMITS }, 1);
     const repo = new AgentTokensRepo(handle.db);
-    const base = { label: '', provider_id: null, model: null, allowed_cidrs_json: null, expires_at: null };
+    const base = { label: '', comment: '', provider_id: null, model: null, allowed_cidrs_json: null, expires_at: null };
     const deptTok = repo.issue({ ...base, token_sha256: h('1'), token_prefix: 'p1', principal_type: 'department', department_id: it1, employee_id: null }, 1);
     const empTok = repo.issue({ ...base, token_sha256: h('2'), token_prefix: 'p2', principal_type: 'employee', department_id: null, employee_id: emp }, 1);
 

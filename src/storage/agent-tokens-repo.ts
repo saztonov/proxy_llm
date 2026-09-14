@@ -9,6 +9,7 @@ export interface AgentTokenRow {
   token_sha256: string;
   token_prefix: string;
   label: string;
+  comment: string;
   principal_type: PrincipalType;
   department_id: number | null;
   employee_id: number | null;
@@ -46,14 +47,14 @@ export interface AgentTokenListRow extends AgentTokenRow {
 
 export type AgentTokenInput = Pick<
   AgentTokenRow,
-  | 'token_sha256' | 'token_prefix' | 'label' | 'principal_type' | 'department_id' | 'employee_id'
+  | 'token_sha256' | 'token_prefix' | 'label' | 'comment' | 'principal_type' | 'department_id' | 'employee_id'
   | 'provider_id' | 'model' | 'allowed_cidrs_json' | 'expires_at'
 >;
 export type AgentTokenPatch = Partial<
-  Pick<AgentTokenRow, 'label' | 'provider_id' | 'model' | 'allowed_cidrs_json' | 'expires_at' | 'enabled'>
+  Pick<AgentTokenRow, 'label' | 'comment' | 'provider_id' | 'model' | 'allowed_cidrs_json' | 'expires_at' | 'enabled'>
 >;
 
-const PATCHABLE = ['label', 'provider_id', 'model', 'allowed_cidrs_json', 'expires_at', 'enabled'] as const;
+const PATCHABLE = ['label', 'comment', 'provider_id', 'model', 'allowed_cidrs_json', 'expires_at', 'enabled'] as const;
 
 export interface AgentTokenFilter {
   departmentId?: number;
@@ -99,9 +100,9 @@ export class AgentTokensRepo {
     `);
     this.getStmt = db.prepare(`SELECT * FROM agent_tokens WHERE id = ?`);
     this.insertStmt = db.prepare(`
-      INSERT INTO agent_tokens (token_sha256, token_prefix, label, principal_type, department_id,
+      INSERT INTO agent_tokens (token_sha256, token_prefix, label, comment, principal_type, department_id,
         employee_id, provider_id, model, allowed_cidrs_json, expires_at, enabled, created_at)
-      VALUES (@token_sha256, @token_prefix, @label, @principal_type, @department_id,
+      VALUES (@token_sha256, @token_prefix, @label, @comment, @principal_type, @department_id,
         @employee_id, @provider_id, @model, @allowed_cidrs_json, @expires_at, 1, @now)
     `);
     this.revokeStmt = db.prepare(

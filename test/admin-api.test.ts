@@ -90,6 +90,18 @@ describe('admin API end to end', () => {
     const { plaintext, token, agentBaseUrl } = issued.json();
     expect(token.effective).toMatchObject({ model: 'global/model', origin: 'global_default' });
     expect(agentBaseUrl).toBe('http://admin.test/agent/v1');
+    expect(token.comment).toBe('');
+
+    const commented = await call('POST', '/admin/api/agent-tokens', { principalType: 'employee', employeeId: emp.id, comment: '  ноутбук\nпо заявке 42  ' });
+    expect(commented.statusCode).toBe(201);
+    const ct = commented.json().token as { id: number; comment: string };
+    expect(ct.comment).toBe('ноутбук\nпо заявке 42');
+    const listed = (await call('GET', '/admin/api/agent-tokens')).json().tokens as Array<{ id: number; comment: string }>;
+    expect(listed.find((x) => x.id === ct.id)!.comment).toBe('ноутбук\nпо заявке 42');
+    expect((await call('PATCH', `/admin/api/agent-tokens/${ct.id}`, { comment: 'другой' })).json().token.comment).toBe('другой');
+    expect((await call('PATCH', `/admin/api/agent-tokens/${ct.id}`, { comment: null })).json().token.comment).toBe('');
+    expect((await call('POST', '/admin/api/agent-tokens', { principalType: 'employee', employeeId: emp.id, comment: 'x'.repeat(501) })).statusCode).toBe(400);
+    await call('POST', `/admin/api/agent-tokens/${ct.id}/revoke`);
 
     expect((await agentChat(plaintext)).statusCode).toBe(200);
     let sent = up.requests.at(-1)!;
@@ -126,6 +138,7 @@ describe('admin API end to end', () => {
     const audit = await call('GET', '/admin/api/audit?limit=200');
     expect(audit.body).not.toMatch(/pl_(site|agent)_[0-9a-f]{32}/);
     expect(audit.body).not.toContain('sk-');
+    expect(audit.body).not.toContain('по заявке 42');
     expect(audit.json().entries.map((e: { action: string }) => e.action)).toEqual(
       expect.arrayContaining(['site.create', 'site_token.issue', 'site_token.revoke', 'provider.create', 'agent_token.issue', 'settings.update']),
     );

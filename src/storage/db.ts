@@ -358,6 +358,10 @@ function applyAdditiveMigrations(db: Database.Database): void {
   if (!hasColumn(db, 'billing_attempts', 'provider_id')) {
     db.exec(`ALTER TABLE billing_attempts ADD COLUMN provider_id INTEGER`);
   }
+  // 005 — комментарий к агентскому ключу (свободный текст админа, в отличие от короткой метки).
+  if (!hasColumn(db, 'agent_tokens', 'comment')) {
+    db.exec(`ALTER TABLE agent_tokens ADD COLUMN comment TEXT NOT NULL DEFAULT ''`);
+  }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_requests_contour_ts ON requests(contour, ts_received);
     CREATE INDEX IF NOT EXISTS idx_requests_dept       ON requests(department_id, ts_received);

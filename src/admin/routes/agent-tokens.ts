@@ -16,6 +16,7 @@ const createBody = z.object({
   employeeId: z.number().int().positive().optional(),
   // null — «метка очищена» (так шлёт интерфейс), хранится как пустая строка.
   label: z.string().trim().max(100).nullable().optional(),
+  comment: z.string().trim().max(500).nullable().optional(),
   providerId: z.number().int().positive().nullable().optional(),
   model: modelSlug.nullable().optional(),
   expiresAt: z.number().int().positive().nullable().optional(),
@@ -23,6 +24,7 @@ const createBody = z.object({
 }).strict();
 const patchBody = z.object({
   label: z.string().trim().max(100).nullable().optional(),
+  comment: z.string().trim().max(500).nullable().optional(),
   providerId: z.number().int().positive().nullable().optional(),
   model: modelSlug.nullable().optional(),
   expiresAt: z.number().int().positive().nullable().optional(),
@@ -65,7 +67,7 @@ function parseCidrs(json: string | null): string[] | null {
 
 function tokenView(row: AgentTokenListRow, providers: Map<number, ProviderRow>, d: AgentDefaults) {
   return {
-    id: row.id, prefix: row.token_prefix, label: row.label, principalType: row.principal_type,
+    id: row.id, prefix: row.token_prefix, label: row.label, comment: row.comment, principalType: row.principal_type,
     departmentId: row.eff_department_id, departmentName: row.department_name, employeeId: row.employee_id,
     employeeLogin: row.employee_login, employeeName: row.employee_name, providerId: row.provider_id,
     providerName: row.provider_name, model: row.model, effective: effectiveOf(row, providers, d),
@@ -128,14 +130,15 @@ export async function registerAgentTokenRoutes(app: FastifyInstance, ctx: AdminC
     const t = generateToken('agent');
     const id = ctx.change(() => {
       const newId = repo.issue({
-        token_sha256: t.sha256, token_prefix: t.prefix, label: b.label ?? '', principal_type: b.principalType,
+        token_sha256: t.sha256, token_prefix: t.prefix, label: b.label ?? '', comment: b.comment ?? '', principal_type: b.principalType,
         department_id: isEmp ? null : ownerId!, employee_id: isEmp ? ownerId! : null,
         provider_id: b.providerId ?? null, model: b.model ?? null,
         allowed_cidrs_json: b.allowedCidrs && b.allowedCidrs.length > 0 ? JSON.stringify(b.allowedCidrs) : null,
         expires_at: b.expiresAt ?? null,
       }, Date.now());
       ctx.audit.record(actorOf(req), 'agent_token.issue', 'agent_token', newId, {
-        prefix: t.prefix, label: b.label ?? '', principalType: b.principalType,
+        // Текст комментария в аудит не пишется — только факт его наличия.
+        prefix: t.prefix, label: b.label ?? '', hasComment: !!b.comment, principalType: b.principalType,
         ...(isEmp ? { employeeId: ownerId } : { departmentId: ownerId }),
         providerId: b.providerId ?? null, model: b.model ?? null, expiresAt: b.expiresAt ?? null,
       });
@@ -157,6 +160,7 @@ export async function registerAgentTokenRoutes(app: FastifyInstance, ctx: AdminC
     if (issues.length) return sendError(reply, 400, 'invalid_request', 'validation failed', { issues });
     const patch: AgentTokenPatch = {};
     if (b.label !== undefined) patch.label = b.label ?? '';
+    if (b.comment !== undefined) patch.comment = b.comment ?? '';
     if (targetTouched) {
       patch.provider_id = b.providerId ?? null;
       patch.model = b.model ?? null;
