@@ -9,6 +9,9 @@ import { SecretBox } from '../../storage/secret-box.js';
 import type { ProviderPatch, ProviderRow } from '../../storage/providers-repo.js';
 import { validateProviderUrl, normalizeProviderUrl } from '../../upstream/provider-url.js';
 import { validateExtraHeader, sanitizeExtraHeaders } from '../../upstream/provider-headers.js';
+import { modelSlug } from '../validation.js';
+import { providerPriceSchema } from '../../billing/provider-pricing.js';
+import { repriceProviderModel } from '../../billing/provider-reprice.js';
 
 const USAGE = z.enum(['auto', 'openrouter', 'stream_options', 'none']);
 const fields = {
@@ -23,6 +26,13 @@ const createBody = z.object(fields).strict();
 const patchBody = z.object({ ...fields, name: fields.name.optional(), baseUrl: fields.baseUrl.optional(), enabled: z.boolean().optional() }).strict();
 
 type Issue = { path: string; message: string };
+
+const priceBody = z.object({
+  model: modelSlug,
+  /** мс; не задано или null — цена для всей истории. */
+  effectiveFrom: z.number().int().min(0).nullable().optional(),
+  price: providerPriceSchema,
+}).strict();
 
 function originOf(url: string): string {
   try {
@@ -145,5 +155,50 @@ export async function registerProviderRoutes(app: FastifyInstance, ctx: AdminCtx
     const result = await checkProvider(toAgentProvider(row, ctx.secrets), ctx.config.ADMIN_PROVIDER_CHECK_TIMEOUT_MS);
     ctx.audit.record(actorOf(req), 'provider.test', 'provider', p.id, { ok: result.ok, httpStatus: result.httpStatus });
     reply.send(result);
+  });
+
+  // ---- Цены моделей: провайдеры, кроме OpenRouter, денег в ответе не сообщают ----
+
+  app.get('/providers/:id/prices', async (req, reply) => {
+    const p = parseOr400(idParam, req.params, reply);
+    if (!p) return;
+    if (!repo.get(p.id)) return sendError(reply, 404, 'not_found', 'provider not found');
+    reply.send({ prices: ctx.repos.providerPrices.listLatest(p.id) });
+  });
+
+  app.post('/providers/:id/prices', async (req, reply) => {
+    const p = parseOr400(idParam, req.params, reply);
+    if (!p) return;
+    const b = parseOr400(priceBody, req.body, reply);
+    if (!b) return;
+    if (!repo.get(p.id)) return sendError(reply, 404, 'not_found', 'provider not found');
+    const prices = ctx.repos.providerPrices;
+    // Пустая дата — цена для всей истории: сразу пересчитываются и прошлые запросы.
+    const effectiveFrom = b.effectiveFrom ?? 0;
+    const out = ctx.db.transaction(() => {
+      const id = prices.insert({
+        provider_id: p.id, model: b.model, effective_from: effectiveFrom, price: b.price, created_by: req.adminSession?.adminId ?? null,
+      }, Date.now());
+      const recalculated = repriceProviderModel(prices, p.id, b.model, effectiveFrom);
+      ctx.audit.record(actorOf(req), 'provider.price_set', 'provider', p.id, { model: b.model, effectiveFrom, recalculated });
+      return { id, recalculated };
+    })();
+    reply.code(201).send({ price: prices.priceAt(p.id, b.model, Number.MAX_SAFE_INTEGER), recalculated: out.recalculated });
+  });
+
+  app.delete('/providers/:id/prices', async (req, reply) => {
+    const p = parseOr400(idParam, req.params, reply);
+    if (!p) return;
+    const q = parseOr400(z.object({ model: modelSlug }), req.query, reply);
+    if (!q) return;
+    const prices = ctx.repos.providerPrices;
+    const out = ctx.db.transaction(() => {
+      const deleted = prices.deleteModel(p.id, q.model);
+      const recalculated = deleted > 0 ? prices.clearEstimates(p.id, q.model) : 0;
+      if (deleted > 0) ctx.audit.record(actorOf(req), 'provider.price_delete', 'provider', p.id, { model: q.model, recalculated });
+      return { deleted, recalculated };
+    })();
+    if (out.deleted === 0) return sendError(reply, 404, 'not_found', 'no price for this model');
+    reply.send(out);
   });
 }

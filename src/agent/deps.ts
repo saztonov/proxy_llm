@@ -7,6 +7,7 @@ import type { ActiveMetrics } from '../concurrency/active-metrics.js';
 import type { OpenAICompatibleClient } from '../upstream/openai-compatible-client.js';
 import type { RequestsRepo } from '../storage/requests-repo.js';
 import type { BillingRepo } from '../storage/billing-repo.js';
+import type { ProviderPricesRepo } from '../storage/provider-prices-repo.js';
 import type { AlertEngine } from '../alerts/rules.js';
 
 export interface AgentDeps {
@@ -19,6 +20,8 @@ export interface AgentDeps {
   client: OpenAICompatibleClient;
   repo: RequestsRepo;
   billing: BillingRepo;
+  /** Цены моделей провайдеров из админки — оценка стоимости, когда провайдер денег не сообщает. */
+  providerPrices: ProviderPricesRepo;
   alerts: AlertEngine;
 }
 

@@ -22,6 +22,73 @@
   </table>
 </div>
 
+<dialog id="dlg-prices" class="dlg-wide" aria-labelledby="dlg-prices-title">
+  <form id="form-price" novalidate>
+    <h2 id="dlg-prices-title">Цены моделей</h2>
+    <div class="form-error hidden" role="alert"></div>
+    <p class="muted">Провайдер не сообщает стоимость в ответе — прокси считает её по токенам и этим ценам (колонка «≈ Оценка $» в статистике). Цены — USD за 1 млн токенов. Модель — как в поле «Модель» у настроек или ключа.</p>
+    <div class="table-wrap">
+      <table class="grid">
+        <thead>
+          <tr><th>Модель</th><th class="num">Вход</th><th class="num">Из кэша</th><th class="num">Выход</th><th>Вне пика</th><th>Пик (UTC)</th><th>Действует с</th><th></th></tr>
+        </thead>
+        <tbody id="prices-tbody"><tr><td colspan="8" class="muted">Загрузка…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="form-grid">
+      <div class="form-row form-row-wide">
+        <label for="price-model">Модель</label>
+        <input id="price-model" name="model" type="text" class="mono" maxlength="200" autocomplete="off" spellcheck="false" placeholder="deepseek-flash">
+      </div>
+      <div class="form-row">
+        <label for="price-input">Вход, $ за 1 млн</label>
+        <input id="price-input" name="price.input" type="text" inputmode="decimal" class="mono" autocomplete="off">
+      </div>
+      <div class="form-row">
+        <label for="price-cacheRead">Вход из кэша, $ за 1 млн</label>
+        <input id="price-cacheRead" name="price.cacheRead" type="text" inputmode="decimal" class="mono" autocomplete="off">
+        <small class="hint">Пусто — по цене входа.</small>
+      </div>
+      <div class="form-row">
+        <label for="price-output">Выход, $ за 1 млн</label>
+        <input id="price-output" name="price.output" type="text" inputmode="decimal" class="mono" autocomplete="off">
+      </div>
+      <div class="form-row form-row-wide form-row-check">
+        <label class="check"><input type="checkbox" name="hasOffPeak"> Отдельный тариф вне пиковых часов (цены выше — пиковые)</label>
+      </div>
+      <div class="form-row offpeak-only hidden">
+        <label for="price-op-input">Вне пика: вход</label>
+        <input id="price-op-input" name="price.offPeak.input" type="text" inputmode="decimal" class="mono" autocomplete="off">
+      </div>
+      <div class="form-row offpeak-only hidden">
+        <label for="price-op-cacheRead">Вне пика: из кэша</label>
+        <input id="price-op-cacheRead" name="price.offPeak.cacheRead" type="text" inputmode="decimal" class="mono" autocomplete="off">
+      </div>
+      <div class="form-row offpeak-only hidden">
+        <label for="price-op-output">Вне пика: выход</label>
+        <input id="price-op-output" name="price.offPeak.output" type="text" inputmode="decimal" class="mono" autocomplete="off">
+      </div>
+      <div class="form-row offpeak-only hidden">
+        <label for="price-peakHours">Пиковые часы, UTC</label>
+        <input id="price-peakHours" name="price.peakHoursUtc" type="text" class="mono" autocomplete="off" placeholder="01-04, 06-10">
+        <small class="hint">Диапазоны часов через запятую, конец не включается.</small>
+      </div>
+      <div class="form-row form-row-check offpeak-only hidden">
+        <label class="check"><input type="checkbox" name="price.peakWeekdaysOnly"> Пик только в будни (пн–пт)</label>
+      </div>
+      <div class="form-row">
+        <label for="price-effectiveFrom">Действует с</label>
+        <input id="price-effectiveFrom" name="effectiveFrom" type="datetime-local">
+        <small class="hint">Пусто — для всех запросов, включая уже выполненные (они пересчитаются).</small>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Закрыть</button>
+      <button type="submit" class="btn btn-primary">Сохранить цену</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="dlg-prov" class="dlg-wide" aria-labelledby="dlg-prov-title">
   <form id="form-prov" novalidate>
     <h2 id="dlg-prov-title">Провайдер</h2>

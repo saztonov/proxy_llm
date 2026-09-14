@@ -51,12 +51,15 @@ export interface BillingAttemptRecord {
   employee_id?: number | null;
   /** Провайдер агентского контура; NULL у сайтов (там всегда OpenRouter). */
   provider_id?: number | null;
+  /** Версия цены провайдера из админки, по которой посчитана оценка (агентский контур). */
+  est_provider_price_id?: number | null;
 }
 
 type BillingAttemptRow = Omit<
   BillingAttemptRecord,
-  'contour' | 'token_id' | 'department_id' | 'employee_id' | 'provider_id'
+  'contour' | 'token_id' | 'department_id' | 'employee_id' | 'provider_id' | 'est_provider_price_id'
 > & {
+  est_provider_price_id: number | null;
   contour: Contour;
   token_id: number | null;
   department_id: number | null;
@@ -237,7 +240,7 @@ export class BillingRepo {
         cached_tokens, cache_write_tokens, reasoning_tokens,
         cost_usd, upstream_inference_cost_usd, is_byok, usage_source,
         cost_est_usd, est_quality, est_price_version, usage_json,
-        contour, token_id, department_id, employee_id, provider_id
+        contour, token_id, department_id, employee_id, provider_id, est_provider_price_id
       ) VALUES (
         @execution_id, @attempt_no, @request_id, @client_id, @payer_scope, @api_key_fp,
         @ts_started, @ts_completed, @billing_day,
@@ -247,7 +250,7 @@ export class BillingRepo {
         @cached_tokens, @cache_write_tokens, @reasoning_tokens,
         @cost_usd, @upstream_inference_cost_usd, @is_byok, @usage_source,
         @cost_est_usd, @est_quality, @est_price_version, @usage_json,
-        @contour, @token_id, @department_id, @employee_id, @provider_id
+        @contour, @token_id, @department_id, @employee_id, @provider_id, @est_provider_price_id
       )
       ON CONFLICT(execution_id, attempt_no) DO NOTHING
     `);
@@ -401,6 +404,7 @@ export class BillingRepo {
       department_id: r.department_id ?? null,
       employee_id: r.employee_id ?? null,
       provider_id: r.provider_id ?? null,
+      est_provider_price_id: r.est_provider_price_id ?? null,
     };
   }
 

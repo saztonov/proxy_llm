@@ -62,7 +62,7 @@ export async function handleAgentChat(req: FastifyRequest, reply: FastifyReply, 
     providerId: provider.id,
   };
   const onAttempt = makeBillingSink(
-    { billing: deps.billing, timezone: cfg.BILLING_TIMEZONE },
+    { billing: deps.billing, timezone: cfg.BILLING_TIMEZONE, providerPrices: deps.providerPrices },
     {
       requestId: ctx.requestId,
       clientId: principal.clientIdForJournal,
@@ -70,7 +70,8 @@ export async function handleAgentChat(req: FastifyRequest, reply: FastifyReply, 
       modelRequested: target.model,
       executionId,
       attribution,
-      pricing: provider.kind === 'openrouter' ? 'openrouter' : 'none',
+      // OpenRouter отдаёт факт в usage.cost; остальным — цены из админки.
+      pricing: provider.kind === 'openrouter' ? 'openrouter' : { providerId: provider.id },
     },
   );
   const entry: JournalEntry = {

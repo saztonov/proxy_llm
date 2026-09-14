@@ -1503,6 +1503,7 @@
           td(fmtInt(p.activeTokens), 'num'),
           td(h('div', { class: 'actions' },
             actionBtn('Изменить', () => openForm(p)),
+            actionBtn('Цены', () => openPrices(p)),
             actionBtn('Проверить', () => test(p), null, !!(t && t.pending)),
             actionBtn(p.enabled ? 'Выключить' : 'Включить', () => toggle(p), p.enabled ? 'btn-danger' : null)))));
         if (t) rows.push(h('tr', { class: 'subrow' }, h('td', { colspan: 9 }, testResultNode(t))));
@@ -1617,6 +1618,135 @@
       }
       dlg.close();
       await load();
+    });
+
+    // ---- Цены моделей ----
+    const priceForm = $('form-price');
+    const priceDlg = $('dlg-prices');
+    const priceTbody = $('prices-tbody');
+    let priceProvider = null;
+
+    const usdM = (v) => (v === null || v === undefined ? '—' : '$' + String(Number(v)));
+    const hoursText = (ranges) => (Array.isArray(ranges) && ranges.length
+      ? ranges.map(([a, b]) => pad(a) + '-' + pad(b)).join(', ') : '');
+
+    function readUsd(name, required, issues) {
+      const s = fval(priceForm, name).replace(',', '.');
+      if (s === '') {
+        if (required) issues.push({ path: name, message: 'Укажите цену' });
+        return null;
+      }
+      const n = Number(s);
+      if (!Number.isFinite(n) || n < 0) {
+        issues.push({ path: name, message: 'Неотрицательное число, например 0.15' });
+        return null;
+      }
+      return n;
+    }
+
+    function readHours(issues) {
+      const name = 'price.peakHoursUtc';
+      const out = [];
+      for (const part of fval(priceForm, name).split(',').map((x) => x.trim()).filter(Boolean)) {
+        const m = /^(\d{1,2})(?::00)?\s*-\s*(\d{1,2})(?::00)?$/.exec(part);
+        const a = m ? Number(m[1]) : NaN;
+        const b = m ? Number(m[2]) : NaN;
+        if (!m || a > 23 || b > 24 || a >= b) {
+          issues.push({ path: name, message: `Не понял «${part}»: нужен диапазон вида 01-04` });
+          return null;
+        }
+        out.push([a, b]);
+      }
+      if (!out.length) issues.push({ path: name, message: 'Укажите пиковые часы' });
+      return out;
+    }
+
+    function syncOffPeak() {
+      const on = fchecked(priceForm, 'hasOffPeak');
+      priceForm.querySelectorAll('.offpeak-only').forEach((el) => el.classList.toggle('hidden', !on));
+    }
+    fe(priceForm, 'hasOffPeak').addEventListener('change', syncOffPeak);
+
+    function fillPrice(v) {
+      clearFormErrors(priceForm);
+      priceForm.reset();
+      if (v) {
+        const pr = v.price;
+        fset(priceForm, 'model', v.model);
+        fset(priceForm, 'price.input', pr.input);
+        fset(priceForm, 'price.cacheRead', pr.cacheRead);
+        fset(priceForm, 'price.output', pr.output);
+        fset(priceForm, 'hasOffPeak', !!pr.offPeak);
+        if (pr.offPeak) {
+          fset(priceForm, 'price.offPeak.input', pr.offPeak.input);
+          fset(priceForm, 'price.offPeak.cacheRead', pr.offPeak.cacheRead);
+          fset(priceForm, 'price.offPeak.output', pr.offPeak.output);
+        }
+        fset(priceForm, 'price.peakHoursUtc', hoursText(pr.peakHoursUtc));
+        fset(priceForm, 'price.peakWeekdaysOnly', !!pr.peakWeekdaysOnly);
+      }
+      syncOffPeak();
+    }
+
+    async function loadPrices() {
+      setRows(priceTbody, [], 8, 'Загрузка…');
+      const list = ((await api('GET', `/providers/${enc(priceProvider.id)}/prices`)) || {}).prices || [];
+      setRows(priceTbody, list.map((v) => {
+        const pr = v.price;
+        return h('tr', null,
+          td(mono(v.model)),
+          td(usdM(pr.input), 'num'),
+          td(usdM(pr.cacheRead), 'num'),
+          td(usdM(pr.output), 'num'),
+          td(pr.offPeak ? mono(`${usdM(pr.offPeak.input)} / ${usdM(pr.offPeak.cacheRead)} / ${usdM(pr.offPeak.output)}`) : muted('—')),
+          td(pr.offPeak ? mono(hoursText(pr.peakHoursUtc) + (pr.peakWeekdaysOnly ? ', пн–пт' : '')) : muted('—')),
+          td(v.effectiveFrom ? fmtDate(v.effectiveFrom) : muted('всегда')),
+          td(h('div', { class: 'actions' },
+            actionBtn('Изменить', () => fillPrice(v)),
+            actionBtn('Удалить', async () => {
+              if (!window.confirm(`Удалить цену модели «${v.model}»? Оценка стоимости её запросов будет снята.`)) return;
+              const r = await api('DELETE', `/providers/${enc(priceProvider.id)}/prices?model=${enc(v.model)}`);
+              toast(`Цена удалена, снята оценка у запросов: ${fmtInt((r && r.recalculated) || 0)}`);
+              await loadPrices();
+            }, 'btn-danger'))));
+      }), 8, 'Цен пока нет — добавьте ниже');
+    }
+
+    async function openPrices(p) {
+      priceProvider = p;
+      $('dlg-prices-title').textContent = 'Цены моделей — ' + p.name;
+      fillPrice(null);
+      openDialog(priceDlg);
+      await loadPrices();
+      fe(priceForm, 'model').focus();
+    }
+
+    onSubmit(priceForm, async () => {
+      const issues = [];
+      const model = fval(priceForm, 'model');
+      if (!model) issues.push({ path: 'model', message: 'Укажите модель' });
+      const price = {
+        input: readUsd('price.input', true, issues),
+        cacheRead: readUsd('price.cacheRead', false, issues),
+        output: readUsd('price.output', true, issues),
+      };
+      if (fchecked(priceForm, 'hasOffPeak')) {
+        price.offPeak = {
+          input: readUsd('price.offPeak.input', true, issues),
+          cacheRead: readUsd('price.offPeak.cacheRead', false, issues),
+          output: readUsd('price.offPeak.output', true, issues),
+        };
+        price.peakHoursUtc = readHours(issues);
+        price.peakWeekdaysOnly = fchecked(priceForm, 'price.peakWeekdaysOnly');
+      }
+      const eff = fval(priceForm, 'effectiveFrom');
+      const effectiveFrom = eff ? new Date(eff).getTime() : null;
+      if (eff && !Number.isFinite(effectiveFrom)) issues.push({ path: 'effectiveFrom', message: 'Некорректная дата' });
+      throwIfIssues(issues);
+      const r = await api('POST', `/providers/${enc(priceProvider.id)}/prices`, { model, effectiveFrom, price });
+      toast(`Цена сохранена, пересчитано запросов: ${fmtInt((r && r.recalculated) || 0)}`);
+      fillPrice(null);
+      await loadPrices();
     });
 
     $('btn-prov-add').addEventListener('click', () => openForm(null));

@@ -299,6 +299,20 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON admin_audit_log(ts);
 `;
 
+/** 006 — цены моделей провайдеров агентского контура; каждое сохранение — новая версия. */
+const MIGRATION_006 = `
+CREATE TABLE IF NOT EXISTS provider_model_prices (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_id     INTEGER NOT NULL REFERENCES providers(id),
+  model           TEXT NOT NULL,
+  effective_from  INTEGER NOT NULL,
+  price_json      TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  created_by      INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_pmp_lookup ON provider_model_prices(provider_id, model, effective_from);
+`;
+
 export interface DbHandle {
   db: Database.Database;
   close(): void;
@@ -371,6 +385,12 @@ function applyAdditiveMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_ba_token_day        ON billing_attempts(token_id, billing_day);
     CREATE INDEX IF NOT EXISTS idx_ba_provider_day     ON billing_attempts(provider_id, billing_day);
   `);
+
+  // 006 — цены провайдеров агентского контура и ссылка попытки на версию цены.
+  db.exec(MIGRATION_006);
+  if (!hasColumn(db, 'billing_attempts', 'est_provider_price_id')) {
+    db.exec(`ALTER TABLE billing_attempts ADD COLUMN est_provider_price_id INTEGER`);
+  }
 }
 
 export function openDb(dbPath: string): DbHandle {

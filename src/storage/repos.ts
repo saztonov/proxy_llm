@@ -10,6 +10,7 @@ import { SettingsRepo } from './settings-repo.js';
 import { AdminUsersRepo } from './admin-users-repo.js';
 import { AdminSessionsRepo } from './admin-sessions-repo.js';
 import { AdminAuditRepo } from './admin-audit-repo.js';
+import { ProviderPricesRepo } from './provider-prices-repo.js';
 
 /** Все репозитории поверх одного соединения SQLite. */
 export interface Repos {
@@ -24,6 +25,7 @@ export interface Repos {
   adminUsers: AdminUsersRepo;
   adminSessions: AdminSessionsRepo;
   audit: AdminAuditRepo;
+  providerPrices: ProviderPricesRepo;
 }
 
 export function createRepos(db: Database.Database): Repos {
@@ -39,5 +41,6 @@ export function createRepos(db: Database.Database): Repos {
     adminUsers: new AdminUsersRepo(db),
     adminSessions: new AdminSessionsRepo(db),
     audit: new AdminAuditRepo(db),
+    providerPrices: new ProviderPricesRepo(db),
   };
 }

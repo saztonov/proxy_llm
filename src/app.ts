@@ -217,6 +217,7 @@ export async function buildApp(config: Config): Promise<AppBundle> {
       client: agentClient,
       repo,
       billing,
+      providerPrices: repos.providerPrices,
       alerts,
     },
   });

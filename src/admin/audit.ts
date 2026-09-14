@@ -15,6 +15,8 @@ const DETAIL_KEYS: ReadonlySet<string> = new Set([
   'originChanged', 'knownLogin', 'hasComment',
   // directory.import — только счётчики, без ФИО и названий.
   'rows', 'departmentsCreated', 'employeesCreated', 'skipped', 'invalid',
+  // provider.price_set / price_delete — модель, дата действия цены, сколько попыток переоценено.
+  'effectiveFrom', 'recalculated',
 ]);
 
 type Scalar = string | number | boolean | null;
