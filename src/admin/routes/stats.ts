@@ -4,7 +4,7 @@ import type { AdminCtx } from '../ctx.js';
 import { parseOr400, sendError } from '../validation.js';
 import { resolveRange } from '../range.js';
 import { todayIn, addDays } from '../../billing/billing-time.js';
-import type { SpendTotals } from '../../storage/billing-repo.js';
+import type { AgentTokenSpendRow, SpendTotals } from '../../storage/billing-repo.js';
 import type { AggregateRow, Contour } from '../../storage/requests-repo.js';
 
 const BY = ['client', 'model', 'department', 'employee', 'agent-token', 'provider', 'site-token', 'day-client', 'day-department'] as const;
@@ -53,7 +53,30 @@ function parseJson(s: string | null): unknown {
   }
 }
 
-type SpendRow = { key: string; label: string } & ReturnType<typeof totals>;
+/** Владелец и состояние агентского ключа — для колонок «Отдел / Сотрудник / Ключ» на странице статистики. */
+function agentTokenOwner(r: AgentTokenSpendRow) {
+  const state = !r.token_known ? 'unknown'
+    : r.token_revoked_at !== null ? 'revoked'
+      : r.token_expires_at !== null && r.token_expires_at < Date.now() ? 'expired'
+        : r.token_enabled ? 'active' : 'disabled';
+  return {
+    tokenPrefix: r.token_prefix,
+    tokenLabel: r.token_label ?? '',
+    tokenComment: r.token_comment ?? '',
+    tokenState: state,
+    principalType: r.principal_type,
+    department: r.department_id === null ? null : { id: r.department_id, name: r.department_name ?? '' },
+    employee: r.employee_id === null ? null : { id: r.employee_id, login: r.employee_login ?? '', name: r.employee_name ?? '' },
+  };
+}
+
+function agentTokenLabel(r: AgentTokenSpendRow): string {
+  if (!r.token_known) return r.token_id === null ? 'без ключа' : `неизвестный ключ #${r.token_id}`;
+  const who = r.employee_name ? `${r.employee_name} (${r.employee_login ?? ''})` : 'отдел целиком';
+  return [r.department_name ?? '—', who, `${r.token_prefix ?? ''}… ${r.token_label ?? ''}`.trim()].join(' · ');
+}
+
+type SpendRow = { key: string; label: string; owner?: ReturnType<typeof agentTokenOwner> } & ReturnType<typeof totals>;
 
 export async function registerStatsRoutes(app: FastifyInstance, ctx: AdminCtx): Promise<void> {
   const { repos } = ctx;
@@ -121,7 +144,7 @@ export async function registerStatsRoutes(app: FastifyInstance, ctx: AdminCtx): 
         break;
       case 'agent-token':
         scope = 'agent';
-        rows = b.spendByAgentToken(from, to).map((r) => row(r.token_id, r.token_prefix ? `${r.token_prefix}… ${r.token_label ?? ''}`.trim() : '—', r));
+        rows = b.spendByAgentToken(from, to).map((r) => ({ ...row(r.token_id, agentTokenLabel(r), r), owner: agentTokenOwner(r) }));
         break;
       case 'provider':
         scope = 'agent';

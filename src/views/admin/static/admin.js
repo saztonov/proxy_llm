@@ -2163,6 +2163,79 @@
   // ================================================================
 
   const CONTOUR_GROUPINGS = new Set(['client', 'model', 'day-client']);
+  const STATS_SUM_KEYS = ['executions', 'upstream_attempts', 'input_tokens', 'output_tokens', 'cost_actual_usd', 'cost_approx_usd', 'missing_rows', 'approx_rows'];
+  const TOKEN_STATE_BADGES = { revoked: ['отозван', 'off'], expired: ['истёк', 'warn'], disabled: ['выключен', 'off'] };
+  const statsCollator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' });
+
+  /**
+   * Колонки таблицы статистики: cell — содержимое ячейки, sort — значение для сортировки,
+   * text — текст для поиска (есть только у колонок группы), cls/tip — класс и подсказка ячейки.
+   */
+  const STATS_NUM_COLUMNS = [
+    ['Выполнений', 'executions', fmtInt],
+    ['Попыток', 'upstream_attempts', fmtInt],
+    ['Токены вход', 'input_tokens', fmtInt],
+    ['Токены выход', 'output_tokens', fmtInt],
+    ['Факт $', 'cost_actual_usd', fmtMoney],
+    ['≈ Оценка $', 'cost_approx_usd', fmtMoney],
+    ['Без стоимости', 'missing_rows', fmtInt],
+  ].map(([title, key, fmt]) => ({
+    title, num: true,
+    sort: (x) => Number(x[key]) || 0,
+    cell: (x) => fmt(x[key]),
+    cls: key === 'missing_rows' ? (x) => (x.missing_rows > 0 ? 'warn-text' : null) : null,
+    tip: key === 'cost_approx_usd' ? (x) => (x.approx_rows ? `оценённых попыток: ${x.approx_rows}` : null) : null,
+  }));
+
+  const statsLabel = (x) => (x.label !== null && x.label !== undefined && x.label !== '' ? String(x.label) : String(x.key == null ? '—' : x.key));
+
+  function statsGroupColumns(by) {
+    if (by !== 'agent-token') {
+      return [{
+        title: 'Группа', text: statsLabel, sort: statsLabel, cell: statsLabel,
+        tip: (x) => (x.key != null && String(x.key) !== statsLabel(x) ? 'ключ: ' + x.key : null),
+      }];
+    }
+    const own = (x) => x.owner || {};
+    const deptName = (x) => (own(x).department ? own(x).department.name : '');
+    const empName = (x) => { const e = own(x).employee; return e ? e.name || e.login : ''; };
+    return [
+      { title: 'Отдел', text: deptName, sort: deptName, cell: (x) => deptName(x) || '—' },
+      {
+        title: 'Сотрудник',
+        text: (x) => { const e = own(x).employee; return e ? `${e.name} ${e.login}` : ''; },
+        sort: empName,
+        cell: (x) => {
+          const e = own(x).employee;
+          if (e) return [h('div', null, empName(x)), e.login ? h('div', { class: 'muted small' }, e.login) : null];
+          return muted(own(x).tokenState === 'unknown' ? '—' : 'отдел целиком');
+        },
+      },
+      {
+        title: 'Ключ',
+        text: (x) => [own(x).tokenPrefix, own(x).tokenLabel, own(x).tokenComment].filter(Boolean).join(' '),
+        sort: (x) => own(x).tokenLabel || own(x).tokenPrefix || '',
+        cell: (x) => {
+          const o = own(x);
+          if (o.tokenState === 'unknown') return muted(x.label);
+          const st = TOKEN_STATE_BADGES[o.tokenState];
+          return [mono((o.tokenPrefix || '') + '…'), o.tokenLabel ? ' ' + o.tokenLabel : null,
+            o.tokenComment ? [' ', commentIcon(o.tokenComment)] : null, st ? [' ', badge(st[0], st[1])] : null];
+        },
+      },
+    ];
+  }
+
+  const normSearch = (s) => String(s == null ? '' : s).toLowerCase().replace(/ё/g, 'е');
+
+  /** Пустые значения — всегда в конце, независимо от направления. */
+  function compareSortValues(a, b, dir) {
+    const ea = a === null || a === undefined || a === '';
+    const eb = b === null || b === undefined || b === '';
+    if (ea || eb) return ea === eb ? 0 : (ea ? 1 : -1);
+    const r = typeof a === 'number' && typeof b === 'number' ? a - b : statsCollator.compare(String(a), String(b));
+    return r * dir;
+  }
 
   async function pageStats() {
     const form = $('form-stats');
@@ -2184,28 +2257,90 @@
     fe(form, 'by').addEventListener('change', syncContour);
     syncContour();
 
-    function totalsRow(label, x, cls, title) {
-      return h('tr', cls ? { class: cls } : null,
-        h('td', { title }, label),
-        td(fmtInt(x.executions), 'num'),
-        td(fmtInt(x.upstream_attempts), 'num'),
-        td(fmtInt(x.input_tokens), 'num'),
-        td(fmtInt(x.output_tokens), 'num'),
-        td(fmtMoney(x.cost_actual_usd), 'num'),
-        h('td', { class: 'num', title: x.approx_rows ? `оценённых попыток: ${x.approx_rows}` : null }, fmtMoney(x.cost_approx_usd)),
-        td(fmtInt(x.missing_rows), x.missing_rows > 0 ? 'num warn-text' : 'num'));
+    const search = $('stats-search');
+    let data = null; // последний ответ сервера: поиск и сортировка работают над ним, без новых запросов
+    let columns = [];
+    let groupCount = 1;
+    let sort = null; // { i, dir }: dir 1 — по возрастанию, -1 — по убыванию; null — порядок сервера
+
+    const cells = (cols, x) => cols.map((c) => h('td', {
+      class: [c.num ? 'num' : null, c.cls ? c.cls(x) : null],
+      title: c.tip ? c.tip(x) : null,
+    }, c.cell(x)));
+
+    function footRow(label, t, title) {
+      return h('tr', null, h('td', { colspan: groupCount, title }, label), cells(STATS_NUM_COLUMNS, t));
+    }
+
+    function renderHead() {
+      $('stats-thead').replaceChildren(h('tr', null, columns.map((c, i) => {
+        const active = sort && sort.i === i;
+        return h('th', { class: c.num ? 'num' : null, scope: 'col', 'aria-sort': active ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none' },
+          h('button', { type: 'button', class: 'th-sort', title: 'Сортировать', on: { click: () => toggleSort(i) } },
+            c.title, h('span', { class: 'sort-mark', 'aria-hidden': 'true' }, active ? (sort.dir > 0 ? '▲' : '▼') : '↕')));
+      })));
+    }
+
+    function toggleSort(i) {
+      // Первый клик: числа — от больших к меньшим, текст — по алфавиту.
+      sort = sort && sort.i === i ? { i, dir: -sort.dir } : { i, dir: columns[i].num ? -1 : 1 };
+      renderHead();
+      renderBody();
+    }
+
+    function visibleRows() {
+      const all = (data && data.rows) || [];
+      const terms = normSearch(search.value).split(/\s+/).filter(Boolean);
+      const searchable = columns.filter((c) => c.text);
+      let rows = !terms.length ? all.slice() : all.filter((x) => {
+        const hay = normSearch(searchable.map((c) => c.text(x)).join(' '));
+        return terms.every((t) => hay.includes(t));
+      });
+      if (sort) {
+        const c = columns[sort.i];
+        rows = rows.map((x, i) => ({ x, i, v: c.sort(x) }))
+          .sort((a, b) => compareSortValues(a.v, b.v, sort.dir) || a.i - b.i)
+          .map((p) => p.x);
+      }
+      return { rows, total: all.length, filtered: terms.length > 0 };
+    }
+
+    function renderBody() {
+      const r = data || {};
+      const v = visibleRows();
+      $('stats-meta').textContent = `Период: ${r.from || '—'} — ${r.to || '—'}` +
+        (r.timezone ? ` · часовой пояс: ${r.timezone}` : '') +
+        ` · строк: ${v.filtered ? fmtInt(v.rows.length) + ' из ' + fmtInt(v.total) : fmtInt(v.total)}`;
+      setRows($('stats-tbody'), v.rows.map((x) => {
+        const state = x.owner && x.owner.tokenState;
+        return h('tr', { class: state && state !== 'active' && state !== 'unknown' ? 'row-off' : null }, cells(columns, x));
+      }), columns.length, v.filtered && v.total ? 'Ничего не найдено' : 'Нет данных за период');
+      let foot = null;
+      if (v.filtered) {
+        const sum = {};
+        for (const k of STATS_SUM_KEYS) sum[k] = v.rows.reduce((acc, x) => acc + (Number(x[k]) || 0), 0);
+        foot = footRow('Итого по найденным', sum, 'Сумма найденных строк; выполнение, попавшее в несколько строк, учтено в каждой');
+      } else if (r.totals) {
+        foot = footRow('Итого', r.totals);
+      }
+      $('stats-tfoot').replaceChildren(...(foot ? [foot] : []));
     }
 
     function render(r) {
-      const rows = r.rows || [];
-      $('stats-meta').textContent = `Период: ${r.from || '—'} — ${r.to || '—'}` +
-        (r.timezone ? ` · часовой пояс: ${r.timezone}` : '') + ` · строк: ${fmtInt(rows.length)}`;
-      setRows($('stats-tbody'), rows.map((x) => {
-        const label = x.label !== null && x.label !== undefined && x.label !== '' ? String(x.label) : String(x.key == null ? '—' : x.key);
-        return totalsRow(label, x, null, x.key != null && String(x.key) !== label ? 'ключ: ' + x.key : null);
-      }), 8, 'Нет данных за период');
-      $('stats-tfoot').replaceChildren(...(r.totals ? [totalsRow('Итого', r.totals)] : []));
+      if (!data || data.by !== r.by) {
+        sort = null;
+        search.value = '';
+      }
+      data = r;
+      const groups = statsGroupColumns(r.by);
+      groupCount = groups.length;
+      columns = groups.concat(STATS_NUM_COLUMNS);
+      search.placeholder = r.by === 'agent-token' ? 'Отдел, сотрудник, логин или метка ключа…' : 'Поиск по группе…';
+      renderHead();
+      renderBody();
     }
+
+    search.addEventListener('input', () => { if (data) renderBody(); });
 
     onSubmit(form, async () => {
       const f = fval(form, 'from');

@@ -129,6 +129,12 @@ describe('admin API end to end', () => {
     expect(byClient.statusCode).toBe(200);
     expect(byClient.json().rows.length).toBeGreaterThan(0);
     expect((await call('GET', '/admin/api/stats/spend?by=department')).json().contour).toBe('agent');
+    const byToken = (await call('GET', '/admin/api/stats/spend?by=agent-token')).json();
+    expect(byToken.contour).toBe('agent');
+    const spent = (byToken.rows as Array<{ executions: number; owner?: { employee: { login: string } | null; department: { name: string } | null } }>)
+      .filter((r) => r.executions > 0);
+    expect(spent.length).toBeGreaterThan(0);
+    expect(spent.every((r) => r.owner?.employee?.login && r.owner.department?.name)).toBe(true);
     expect((await call('GET', '/admin/api/stats/spend?from=2026-02-01&to=2026-01-01')).statusCode).toBe(400);
     expect((await call('GET', '/admin/api/stats/summary')).json()).toHaveProperty('agents.day.total');
     const agentReqs = (await call('GET', '/admin/api/requests?contour=agent&limit=5')).json().requests as Array<{ contour: string }>;

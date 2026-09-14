@@ -150,11 +150,27 @@ export interface EmployeeSpendRow extends SpendTotals {
   department_id: number | null;
 }
 
+/**
+ * Строка на каждый выданный агентский ключ (включая ключи без расхода за период) + строки расхода,
+ * чей token_id не найден в agent_tokens. У ключей без расхода агрегаты NULL.
+ */
 export interface AgentTokenSpendRow extends SpendTotals {
   token_id: number | null;
+  /** 1 — ключ есть в agent_tokens; 0 — расход по неизвестному ключу. */
+  token_known: number;
   token_label: string | null;
   token_prefix: string | null;
+  token_comment: string | null;
+  token_enabled: number | null;
+  token_revoked_at: number | null;
+  token_expires_at: number | null;
   principal_type: string | null;
+  /** Текущий отдел владельца по справочнику (у ключа сотрудника — отдел сотрудника). */
+  department_id: number | null;
+  department_name: string | null;
+  employee_id: number | null;
+  employee_login: string | null;
+  employee_name: string | null;
 }
 
 export interface ProviderSpendRow extends SpendTotals {
@@ -358,12 +374,38 @@ export class BillingRepo {
       ORDER BY cost_actual_usd DESC
     `);
 
+    // Отчёт идёт от справочника ключей, чтобы в нём были и ключи без расхода. Отозванные — только
+    // с расходом за период. Расход по ключу, которого нет в agent_tokens, выводится отдельной строкой:
+    // сумма строк должна сходиться с «Итого». UNION ALL вместо FULL JOIN — не зависим от версии SQLite.
+    const tokenSpend = `s.upstream_attempts, s.executions, s.input_tokens, s.output_tokens, s.cached_tokens,
+      s.reasoning_tokens, s.cost_actual_usd, s.cost_approx_usd, s.missing_rows, s.approx_rows`;
     this.spendByAgentTokenStmt = db.prepare(`
-      SELECT b.token_id, t.label AS token_label, t.token_prefix, t.principal_type, ${SPEND_COLUMNS}
-      FROM billing_attempts b LEFT JOIN agent_tokens t ON t.id = b.token_id
-      WHERE ${AGENT_RANGE}
-      GROUP BY b.token_id
-      ORDER BY cost_actual_usd DESC
+      WITH s AS (
+        SELECT b.token_id, ${SPEND_COLUMNS}
+        FROM billing_attempts b
+        WHERE ${AGENT_RANGE}
+        GROUP BY b.token_id
+      )
+      SELECT * FROM (
+        SELECT t.id AS token_id, 1 AS token_known, t.label AS token_label, t.token_prefix,
+               t.comment AS token_comment, t.enabled AS token_enabled, t.revoked_at AS token_revoked_at,
+               t.expires_at AS token_expires_at, t.principal_type,
+               d.id AS department_id, d.name AS department_name,
+               e.id AS employee_id, e.login AS employee_login, e.display_name AS employee_name,
+               ${tokenSpend}
+        FROM agent_tokens t
+        LEFT JOIN s ON s.token_id = t.id
+        LEFT JOIN employees e ON e.id = t.employee_id
+        LEFT JOIN departments d ON d.id = COALESCE(t.department_id, e.department_id)
+        WHERE t.revoked_at IS NULL OR s.token_id IS NOT NULL
+        UNION ALL
+        SELECT s.token_id, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+               ${tokenSpend}
+        FROM s
+        WHERE s.token_id IS NULL OR NOT EXISTS (SELECT 1 FROM agent_tokens t WHERE t.id = s.token_id)
+      )
+      ORDER BY COALESCE(cost_actual_usd, 0) + COALESCE(cost_approx_usd, 0) DESC,
+               department_name IS NULL, department_name, employee_name IS NOT NULL, employee_name, token_id
     `);
 
     this.spendByProviderStmt = db.prepare(`

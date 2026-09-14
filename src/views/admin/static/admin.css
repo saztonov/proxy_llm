@@ -202,6 +202,27 @@ main {
 }
 .grid .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .grid tr.row-off td { color: var(--muted); }
+.grid thead th .th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.grid thead th .th-sort:hover { color: var(--text); }
+.grid thead th .th-sort:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 2px; }
+.sort-mark { font-size: 10px; opacity: 0.4; }
+.grid thead th[aria-sort="ascending"], .grid thead th[aria-sort="descending"] { color: var(--text); }
+.grid thead th[aria-sort="ascending"] .sort-mark, .grid thead th[aria-sort="descending"] .sort-mark { opacity: 1; color: var(--primary); }
+
+.table-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 10px; }
+.table-toolbar input[type="search"] { flex: 0 1 360px; }
+.table-toolbar p { margin: 0; }
 .grid tr.subrow td { background: var(--surface-2); padding-top: 4px; padding-bottom: 8px; }
 .grid-kv th { width: 45%; font-weight: 500; color: var(--text); background: transparent; position: static; }
 .grid-kv th .mono { display: block; color: var(--muted); font-weight: 400; }
@@ -287,7 +308,7 @@ main {
 .form-actions { display: flex; gap: 8px; justify-content: flex-start; margin-top: 4px; }
 
 input[type="text"], input[type="password"], input[type="email"], input[type="url"],
-input[type="number"], input[type="date"], input[type="datetime-local"], input:not([type]),
+input[type="number"], input[type="date"], input[type="datetime-local"], input[type="search"], input:not([type]),
 select, textarea {
   width: 100%;
   font: inherit;
@@ -330,6 +351,7 @@ label.check input { width: auto; margin: 0; }
   margin-bottom: 12px;
 }
 .filters .form-row { flex: 0 1 180px; }
+.filters .form-row-wide { flex-basis: 300px; }
 .filters .form-error { flex-basis: 100%; margin-top: 0; }
 .form-row-btn { flex: 0 0 auto !important; justify-content: flex-end; }
 
@@ -340,6 +362,8 @@ label.check input { width: auto; margin: 0; }
 /* ---------- Вход ---------- */
 
 body[data-page="login"] main { max-width: 400px; padding-top: 12vh; }
+/* Отчёт по ключам широкий: таблица на всю ширину окна. */
+body[data-page="stats"] main, body[data-page="stats"] .topbar-inner { max-width: none; }
 .login-box {
   background: var(--surface);
   border: 1px solid var(--border);

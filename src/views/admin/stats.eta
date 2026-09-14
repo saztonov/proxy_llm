@@ -13,14 +13,14 @@
     <label for="stats-to">По</label>
     <input id="stats-to" name="to" type="date" required>
   </div>
-  <div class="form-row">
+  <div class="form-row form-row-wide">
     <label for="stats-by">Группировка</label>
     <select id="stats-by" name="by">
       <option value="client">по клиентам</option>
       <option value="model">по моделям</option>
       <option value="department">по отделам</option>
       <option value="employee">по сотрудникам</option>
-      <option value="agent-token">по агентским ключам</option>
+      <option value="agent-token">по отделам и сотрудникам (все ключи)</option>
       <option value="provider">по провайдерам</option>
       <option value="site-token">по токенам сайтов</option>
       <option value="day-client">по дням и клиентам</option>
@@ -40,21 +40,13 @@
   </div>
 </form>
 
-<p id="stats-meta" class="muted"></p>
+<div class="table-toolbar">
+  <input id="stats-search" type="search" placeholder="Поиск по группе…" aria-label="Поиск в таблице" autocomplete="off" spellcheck="false">
+  <p id="stats-meta" class="muted"></p>
+</div>
 <div class="table-wrap">
   <table class="grid">
-    <thead>
-      <tr>
-        <th>Группа</th>
-        <th class="num">Выполнений</th>
-        <th class="num">Попыток</th>
-        <th class="num">Токены вход</th>
-        <th class="num">Токены выход</th>
-        <th class="num">Факт $</th>
-        <th class="num">≈ Оценка $</th>
-        <th class="num">Без стоимости</th>
-      </tr>
-    </thead>
+    <thead id="stats-thead"></thead>
     <tbody id="stats-tbody"></tbody>
     <tfoot id="stats-tfoot"></tfoot>
   </table>
