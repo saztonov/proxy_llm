@@ -53,6 +53,7 @@ export class ProviderPricesRepo {
   private readonly repriceRowsStmt;
   private readonly setEstimateStmt;
   private readonly clearEstimatesStmt;
+  private readonly usedModelsStmt;
 
   constructor(db: Database.Database) {
     this.insertStmt = db.prepare(`
@@ -87,6 +88,15 @@ export class ProviderPricesRepo {
     this.clearEstimatesStmt = db.prepare(`
       UPDATE billing_attempts SET cost_est_usd = NULL, est_quality = 'no_price', est_provider_price_id = NULL
       WHERE contour = 'agent' AND provider_id = ? AND model_requested = ? AND usage_source <> 'response'
+    `);
+    // Модели, под которые цена реально пригодится: по ним были запросы или их назначили ключам.
+    this.usedModelsStmt = db.prepare(`
+      SELECT model FROM (
+        SELECT DISTINCT model_requested AS model FROM billing_attempts
+        WHERE contour = 'agent' AND provider_id = @id AND model_requested IS NOT NULL
+        UNION
+        SELECT model FROM agent_tokens WHERE provider_id = @id AND model IS NOT NULL AND revoked_at IS NULL
+      ) ORDER BY model
     `);
   }
 
@@ -132,5 +142,10 @@ export class ProviderPricesRepo {
   /** Снимает оценки модели (цена удалена). Возвращает число затронутых попыток. */
   clearEstimates(providerId: number, model: string): number {
     return this.clearEstimatesStmt.run(providerId, model).changes;
+  }
+
+  /** Модели провайдера из журнала запросов и назначений ключей (без глобального дефолта). */
+  usedModels(providerId: number): string[] {
+    return (this.usedModelsStmt.all({ id: providerId }) as Array<{ model: string }>).map((r) => r.model);
   }
 }

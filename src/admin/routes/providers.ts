@@ -76,6 +76,16 @@ export async function registerProviderRoutes(app: FastifyInstance, ctx: AdminCtx
   const repo = ctx.repos.providers;
   const insecure = ctx.config.ADMIN_ALLOW_INSECURE_PROVIDERS;
   const defaultId = () => ctx.repos.settings.agentDefaults().providerId;
+  /**
+   * Имена моделей, которые у провайдера реально в ходу. Цена ищется по точному имени, поэтому
+   * интерфейс подсказывает их и помечает цену модели, к которой запросов не было (опечатка).
+   */
+  const usedModels = (providerId: number): string[] => {
+    const set = new Set(ctx.repos.providerPrices.usedModels(providerId));
+    const d = ctx.repos.settings.agentDefaults();
+    if (d.providerId === providerId && d.model) set.add(d.model);
+    return [...set].sort();
+  };
   const sealKey = (k: string | null) => ({ api_key_enc: k === null ? null : ctx.secrets.seal(k), api_key_fp: k === null ? null : SecretBox.fingerprint(k) });
   const sealHeaders = (h: Record<string, string> | null) => (h === null || Object.keys(h).length === 0 ? null : ctx.secrets.seal(JSON.stringify(h)));
 
@@ -166,7 +176,7 @@ export async function registerProviderRoutes(app: FastifyInstance, ctx: AdminCtx
     const p = parseOr400(idParam, req.params, reply);
     if (!p) return;
     if (!repo.get(p.id)) return sendError(reply, 404, 'not_found', 'provider not found');
-    reply.send({ prices: ctx.repos.providerPrices.listLatest(p.id) });
+    reply.send({ prices: ctx.repos.providerPrices.listLatest(p.id), usedModels: usedModels(p.id) });
   });
 
   app.post('/providers/:id/prices', async (req, reply) => {
@@ -186,7 +196,12 @@ export async function registerProviderRoutes(app: FastifyInstance, ctx: AdminCtx
       ctx.audit.record(actorOf(req), 'provider.price_set', 'provider', p.id, { model: b.model, effectiveFrom, recalculated });
       return { id, recalculated };
     })();
-    reply.code(201).send({ price: prices.priceAt(p.id, b.model, Number.MAX_SAFE_INTEGER), recalculated: out.recalculated });
+    reply.code(201).send({
+      price: prices.priceAt(p.id, b.model, Number.MAX_SAFE_INTEGER),
+      recalculated: out.recalculated,
+      // Цена сохранена, но под это имя у провайдера нет ни запросов, ни назначений — вероятна опечатка.
+      unusedModel: !usedModels(p.id).includes(b.model),
+    });
   });
 
   app.delete('/providers/:id/prices', async (req, reply) => {

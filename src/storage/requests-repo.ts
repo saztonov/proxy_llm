@@ -113,6 +113,8 @@ export interface DashboardRow {
   input_tokens: number | null;
   output_tokens: number | null;
   cost_actual_usd: number | null;
+  /** Оценка «≈» по ценам провайдера для попыток без факта; NULL — оценки нет. */
+  cost_approx_usd: number | null;
   missing_attempts: number | null;
 }
 
@@ -193,6 +195,10 @@ export class RequestsRepo {
              (SELECT SUM(CASE WHEN usage_source = 'response' THEN cost_usd ELSE 0 END)
                 FROM billing_attempts b
                 WHERE b.execution_id = r.billing_execution_id) AS cost_actual_usd,
+             -- Оценка по ценам провайдера там, где факта нет (DeepSeek и др.); NULL — оценки нет.
+             (SELECT SUM(CASE WHEN usage_source <> 'response' THEN cost_est_usd END)
+                FROM billing_attempts b
+                WHERE b.execution_id = r.billing_execution_id) AS cost_approx_usd,
              (SELECT SUM(CASE WHEN usage_source <> 'response' THEN 1 ELSE 0 END)
                 FROM billing_attempts b
                 WHERE b.execution_id = r.billing_execution_id) AS missing_attempts

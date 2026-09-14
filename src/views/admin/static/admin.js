@@ -1700,12 +1700,15 @@
 
     async function loadPrices() {
       setRows(priceTbody, [], 8, 'Загрузка…');
-      const list = ((await api('GET', `/providers/${enc(priceProvider.id)}/prices`)) || {}).prices || [];
+      const data = (await api('GET', `/providers/${enc(priceProvider.id)}/prices`)) || {};
+      const list = data.prices || [];
+      const used = new Set(data.usedModels || []);
+      $('price-models').replaceChildren(...[...used].map((m) => h('option', { value: m })));
       setRows(priceTbody, list.map((v) => {
         const pr = v.price;
         const peakTag = pr.offPeak ? ' (пик)' : '';
         return h('tr', null,
-          td(mono(v.model)),
+          td([mono(v.model), used.has(v.model) ? null : [' ', badge('нет запросов к этой модели', 'warn')]]),
           td(usdM(pr.input) + peakTag, 'num'),
           td(usdM(pr.cacheRead) + peakTag, 'num'),
           td(usdM(pr.output) + peakTag, 'num'),
@@ -1755,7 +1758,11 @@
       if (eff && !Number.isFinite(effectiveFrom)) issues.push({ path: 'effectiveFrom', message: 'Некорректная дата' });
       throwIfIssues(issues);
       const r = await api('POST', `/providers/${enc(priceProvider.id)}/prices`, { model, effectiveFrom, price });
-      toast(`Цена сохранена, пересчитано запросов: ${fmtInt((r && r.recalculated) || 0)}`);
+      if (r && r.unusedModel) {
+        toast(`Цена сохранена, но запросов к модели «${model}» у этого провайдера не было — проверьте написание имени`, true);
+      } else {
+        toast(`Цена сохранена, пересчитано запросов: ${fmtInt((r && r.recalculated) || 0)}`);
+      }
       fillPrice(null);
       await loadPrices();
     });
@@ -2267,6 +2274,15 @@
       return mono(used || req);
     }
 
+    /** Факт из ответа провайдера; где его нет — оценка «≈» по ценам провайдера из админки. */
+    function costCell(r) {
+      const approx = r.cost_approx_usd;
+      if (approx === null || approx === undefined) return fmtMoney(r.cost_actual_usd);
+      const est = h('span', { title: 'Оценка по ценам провайдера: он не сообщает стоимость в ответе' }, '≈' + fmtMoney(approx));
+      const fact = Number(r.cost_actual_usd) || 0;
+      return fact > 0 ? [fmtMoney(fact), ' + ', est] : est;
+    }
+
     const contourLabel = (c) => (c === 'site' ? 'сайт' : c === 'agent' ? 'агент' : (c || '—'));
 
     function render(list) {
@@ -2282,7 +2298,7 @@
         td(fmtMsDur(r.latency_ms), 'num'),
         td(fmtInt(r.input_tokens), 'num'),
         td(fmtInt(r.output_tokens), 'num'),
-        td(fmtMoney(r.cost_actual_usd), 'num'),
+        td(costCell(r), 'num'),
         td(r.error_code ? h('span', { class: 'mono err-text' }, r.error_code) : '—'))),
       13, 'Запросов не найдено');
     }

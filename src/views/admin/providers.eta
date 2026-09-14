@@ -38,7 +38,9 @@
     <div class="form-grid">
       <div class="form-row form-row-wide">
         <label for="price-model">Модель</label>
-        <input id="price-model" name="model" type="text" class="mono" maxlength="200" autocomplete="off" spellcheck="false" placeholder="например, deepseek-flash">
+        <input id="price-model" name="model" type="text" class="mono" maxlength="200" autocomplete="off" spellcheck="false" placeholder="например, deepseek-flash" list="price-models">
+        <datalist id="price-models"></datalist>
+        <small class="hint">Имя должно совпадать с моделью в настройках или ключе буква в букву — подсказки ниже поля берутся из запросов этого провайдера.</small>
       </div>
       <div class="form-row">
         <label for="price-input">Вход, $ за 1 млн</label>
